@@ -260,7 +260,19 @@ def download_genoset(name) :
   genoset = [ get_val(tt[0], 'Magnitude'), 
               get_val(tt[0], 'Summary'),
               repute_short ]
-  criteria = criteria_page.replace(' ', '').replace('\n', '').replace('\t', '')
+  # remove # comments
+  crit_text = ''
+  for l in criteria_page.split('\n') : 
+    print l
+    toks = l.split()
+    if len(toks) == 0 : continue
+    if toks[0] == '#' : continue
+    crit_text = crit_text + l + '\n'
+  # remove HTML comments
+  import lxml.html as LH
+  doc = LH.fromstring(crit_text)
+  criteria = doc.text_content()
+  criteria = criteria.replace(' ', '').replace('\n', '').replace('\t', '')
   #import re
   #match = re.match('([a-z]*)\((.*)\)', criteria)
   #if match == None or len(match.groups()) != 2 : 
@@ -351,6 +363,7 @@ def interpret_snps(genome_file, db_file) :
     if len(matches) == 0 : continue
     result_data = [ genome_snp[0], matches[0] ]
     ref_genotype_data = { geno[0] : geno[1] for geno in ref_snp[6] }
+    print snpid
     result_data.extend(ref_genotype_data[matches[0]])
     results[snpid] = result_data
   return results
@@ -540,3 +553,46 @@ def evaluate_parsed_criteria(parsed, genosets, genome) :
     return not results[0]
   print 'ERROR : unknown operator %s' % parsed[0]
   return None
+
+
+def make_snp_db_output(snp_db_file, output, verbose = False, mode = 'w') :
+  db = shelve.open(snp_db_file, 'r')
+  outfile = open(output, mode)
+  outfile.write(css_style)
+  #rs11155133 ['6', 'p', 'LOC102723724', '140848688', '38.1', '141', [('AA', ['0', 'common in complete genomics', 'g'])]]
+  outfile.write('<h1> SNP Database </h1> <table>\n')
+  if verbose :
+    outfile.write('<tr><td> SNP </td> <td> Chromosome </td> <td> Orientation </td>  <td> Gene </td> <td> Location </td> <td> Genome Build </td>  <td> dbSNP Build </td> <td> Genotype </td> <td> Significance </td>  <td> Description </td></tr>\n')
+  else:
+    outfile.write('<tr><td> SNP </td> <td> Chromosome </td>  <td> Gene </td> <td> Genotype </td> <td> Significance </td>  <td> Description </td>\n')
+  for snpid in db :
+    results = db[snpid]
+    td = '<td rowspan="%d">' % len(results[6])
+    if verbose :
+      outfile.write('<tr>%s %s </td> %s %s </td>  %s %s </td> %s %s </td> %s %s </td>  %s %s </td> %s %s </td>' % 
+                    (td, snpid, td, results[0], td, results[1], td, results[2], td, results[3], td, results[4], td, results[5]))
+    else:
+      outfile.write('<tr> %s %s </td> %s %s </td>  %s %s </td>' % 
+                    (td, snpid, td, results[0], td, results[2]))
+    for gt in results[6] :
+      mag_style = ''
+      if gt[1][2] == 'g' : mag_style = ' bgcolor="#00FF00"'
+      elif gt[1][2] == 'b' : mag_style = ' bgcolor="#FF0000"'
+      outfile.write('<td> %s </td> <td%s> %s </td>  <td> %s </td></tr>\n' % (gt[0], mag_style, gt[1][0], gt[1][1]))
+  outfile.write('</table>\n')
+
+
+def make_genoset_db_output(genoset_db_file, output, mode = 'w') :
+  db = shelve.open(genoset_db_file, 'r')
+  outfile = open(output, mode)
+  outfile.write(css_style)
+  #gs269 ['2', 'APOE E2/E3', 'g', 'and(rs429358(T;T),rs7412(C;T))']
+  outfile.write('<h1> Genoset Database </h1> <table>\n')
+  outfile.write('<tr><td> Genoset </td> <td> Significance </td> <td> Description </td> <td> Criteria </td></tr>\n')
+  for geno in db :
+    results = db[geno]
+    mag_style = ''
+    if results[2] == 'g' : mag_style = ' bgcolor="#00FF00"'
+    elif results[2] == 'b' : mag_style = ' bgcolor="#FF0000"'
+    outfile.write('<td> %s </td> <td%s> %s </td>  <td> %s </td><td> %s </td></tr>\n' % (geno, mag_style, results[0], results[1], results[3]))
+  outfile.write('</table>\n')
