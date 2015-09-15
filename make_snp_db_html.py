@@ -2,5 +2,5 @@
 
 import sys
 import snptools
-snptools.make_snp_db_output('merge.db', 'snps.html')
+snptools.make_snp_db_output('data/snps.db', 'snps.html')
 

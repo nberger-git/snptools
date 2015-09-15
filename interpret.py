@@ -5,12 +5,12 @@
 import sys
 import snptools
 results_snps = snptools.interpret_snps(sys.argv[1], sys.argv[2])
-snptools.make_snp_output(results_snps, sys.argv[4], 2)
+snptools.make_snp_output(results_snps, sys.argv[2], sys.argv[4], 2)
 
 #for r in results_snps : print r, results_snps[r]
 #print len(results_snps)
 
-results_sets = snptools.interpret_genosets('genome_test.txt', sys.argv[3], sys.argv[2])
+results_sets = snptools.interpret_genosets(sys.argv[1], sys.argv[3], sys.argv[2])
 snptools.make_genoset_output(results_sets, sys.argv[4], 2, 'a')
 
 #print results_sets

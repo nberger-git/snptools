@@ -154,23 +154,34 @@ def download_snp(name, geno_dict = {}) :
   if not ok_v4 :
     print 'INFO : skipping SNP %s since it is not on the 23andMe v4 chip' % name
     return []
+  # Next time: add allele freq information from SNP "population diversity" template (see e.g. rs2011077)
   snp = [ #get_val(tt[0], 'rsid'), 
           get_val(tt[0], 'Chromosome'), 
-          get_val(tt[0], 'Orientation'), 
+          '', 
           get_val(tt[0], 'Gene'), 
           get_val(tt[0], 'position'), 
           #get_val(tt[0], 'Assembly'), 
           get_val(tt[0], 'GenomeBuild'), 
           get_val(tt[0], 'dbSNPBuild') ]
-  if len(snp[1]) > 0 : snp[1] = snp[1][0] # keep only short version
+  o1 = get_val(tt[0], 'Orientation')
+  o2 = get_val(tt[0], 'StabilizedOrientation')
+  if len(o1) > 0 : 
+    snp[1] = o1[0]
+  else :
+    snp[1] = '-'
+  if len(o2) > 0 : 
+    snp[1] = snp[1] + o2[0] 
+  else :
+    snp[1] = snp[1] + '-'    
   genos = []
   for i in range(1,5) :
     if tt[0].has('geno%d' % i) : 
       genotype = name + get_val(tt[0], 'geno%d' % i)
+      parse_geno = parse_name(genotype)
       if len(geno_dict) and not genotype.lower() in geno_dict :
-        print '*** WARNING : skipping inexistent genotype ' + genotype
+        print '*** WARNING : adding placeholder genotype for ' + genotype
+        genos.append((parse_geno[2] + parse_geno[3], ['','','']))
       else :
-        parse_geno = parse_name(genotype)
         geno_data = download_genotype(genotype)
         genos.append((parse_geno[2] + parse_geno[3], geno_data))
   if genos == [] : return [] # no genotypes => not interesting!
@@ -313,21 +324,28 @@ def read_genome(filename) :
   return genome
 
 
-def match_single(b1, b2, rec = True) :
+def match_single(b1, b2, orientation = 0, rec = True) :
   u1 = b1.upper()
   u2 = b2.upper()
-  if u1 == u2 : return +1
-  if u1 == 'A' and u2 == 'T' : return -1
-  if u1 == 'C' and u2 == 'G' : return -1
+  if u1 == u2 :
+    if orientation == -1 : 
+      print 'WARNING: removing ' + u1 + u2 + ' positive match against orientation!'
+    else :
+      return +1
+  if (u1 == 'A' and u2 == 'T') or (u1 == 'C' and u2 == 'G') :
+    if orientation == +1 : 
+      print 'WARNING: removing ' + u1 + u2 + ' negative match against orientation!'
+    else : 
+      return -1
   if u1 == 'D' and u2 == '-' : return +1
-  if u1 == 'I' and re.match('[A,T,C,G]*', u2) : return +1
+  if u1 == 'I' and re.match('[ATCG]+', u2) : return +1
   if rec :
-    rev = match_single(u2, u1, False) 
+    rev = match_single(u2, u1, orientation, False) 
     if rev != 0 : return rev
   return 0
 
   
-def match_genotypes(t1, t2) :
+def match_genotypes(t1, t2, orientation = 0) :
   if len(t1) != 1 and len(t1) != 2 : 
     print 'ERROR : invalid genotype in match :  "%s"' % t1
     return False
@@ -337,15 +355,15 @@ def match_genotypes(t1, t2) :
   if len(t1) != len(t2) :
     print 'ERROR : genotype length mismatch : "%s" and "%s" ' % (t1, t2)
     return False  
-  if match_single(t1[0], t2[0])*match_single(t1[1], t2[1]) == 1 : return True
-  if match_single(t1[0], t2[1])*match_single(t1[1], t2[0]) == 1 : return True
+  if match_single(t1[0], t2[0], orientation)*match_single(t1[1], t2[1], orientation) == 1 : return True
+  if match_single(t1[0], t2[1], orientation)*match_single(t1[1], t2[0], orientation) == 1 : return True
   return False
 
 
-def match_genotype_list(genome_gt, ref_gt_list) :
+def match_genotype_list(genome_gt, ref_gt_list, orientation = 0) :
   matches = []
   for ref_gt in ref_gt_list :
-    if match_genotypes(genome_gt, ref_gt) : matches.append(ref_gt)
+    if match_genotypes(genome_gt, ref_gt, orientation) : matches.append(ref_gt)
   return matches
 
 
@@ -378,8 +396,14 @@ def interpret_snp(snpid, ref_snp, genome_snp) :
     #continue
   ref_genotypes = [ geno[0] for geno in ref_snp[6] ]
   print 'DEBUG : testing genotype list %s for genome %s' % (str(ref_genotypes), genome_snp[0])
-  matches = match_genotype_list(genome_snp[0], ref_genotypes)
-  print 'MATCHDEBUG', snpid, ref_genotypes, matches
+  if ref_snp[1] == 'p' :
+    orientation = +1
+  elif ref_snp[1] == 'm' :
+    orientation = -1
+  else:
+    orientation = 0
+  matches = match_genotype_list(genome_snp[0], ref_genotypes, orientation)
+  print 'MATCHDEBUG', snpid, ref_genotypes, genome_snp[0], matches
   if len(matches) > 1 : 
     print 'WARNING : ambiguous matches for SNP %s : genotype %s matches %d of %s' % (snpid, genome_snp[0], len(matches), str(ref_genotypes))
     matches = []
@@ -409,7 +433,8 @@ background-color: red;
 </style>
 '''
 
-def make_snp_output(snp_results, output, mag_cutoff = 2, mode = 'w') :
+def make_snp_output(snp_results, snps_file, output, mag_cutoff = 2, mode = 'w') :
+  snps = shelve.open(snps_file, 'r')
   sorted_results = []
   for snpid in snp_results : 
     mag = snp_results[snpid][2]
@@ -422,10 +447,12 @@ def make_snp_output(snp_results, output, mag_cutoff = 2, mode = 'w') :
   outfile = open(output, mode)
   outfile.write(css_style)
   outfile.write('<h1> SNP Results </h1> <table>\n')
+  outfile.write('<tr><td> SNP ID </td><td> Chr. </td><td> Gene </td><td> Individual Genotype </td><td> Matched Genotype </td><td> Significance </td><td> Description </td>\n')
   for snpid, mag in sorted_results :
     if mag < mag_cutoff : break # list is sorted
     results = snp_results[snpid]
-    outfile.write('  <tr><td> %s </td> <td> %s </td>  <td> %s </td> ' % (snpid, results[0], results[1]))  # snpid and genotypes
+    snp = snps[snpid]
+    outfile.write('  <tr><td> %s </td><td> %s </td><td> %s </td> <td> %s </td>  <td> %s </td> ' % (snpid, snp[0], snp[2], results[0], results[1]))  # snpid and genotypes
     mag_style = ''
     #if results[4] == 'g' : mag_style = ' style="background-color:green'
     #elif results[4] == 'b' : mag_style = ' style="background-color:red'
@@ -436,12 +463,15 @@ def make_snp_output(snp_results, output, mag_cutoff = 2, mode = 'w') :
   outfile.write('</table>\n')
 
 
-def interpret_genosets(genome_file, genoset_file, db_file) :
+def interpret_genosets(genome_file, genoset_file, snp_file) :
   genome = read_genome(genome_file)
   genosets = shelve.open(genoset_file, 'r')
+  snps = shelve.open(snp_file, 'r')
   results = {}
   for genoset in genosets :
-    if interpret_genoset_criteria(genosets[genoset][3], genosets, genome) :
+    print 'Genoset ' + genoset
+    if interpret_genoset_criteria(genosets[genoset][3], genosets, snps, genome) :
+      print '==> passed', genoset
       results[genoset] = genosets[genoset]
   return results
 
@@ -458,7 +488,7 @@ def make_genoset_output(genoset_results, output, mag_cutoff = 2, mode = 'w') :
   outfile = open(output, mode)
   outfile.write(css_style)
   outfile.write('<h1> Genoset Results </h1> <table>\n')
-  outfile.write('  <tr><td> Genoset ID </td><td> Significance </td><td> Description </td>')
+  outfile.write('  <tr><td> Genoset ID </td><td> Significance </td><td> Description </td>\n')
   for genoid, mag in sorted_results :
     if mag < mag_cutoff : break # list is sorted
     results = genoset_results[genoid]
@@ -473,10 +503,11 @@ def make_genoset_output(genoset_results, output, mag_cutoff = 2, mode = 'w') :
   outfile.write('</table>\n')
       
       
-def interpret_genoset_criteria(criteria, genosets, genome) :
+def interpret_genoset_criteria(criteria, genosets, snps, genome) :
   parsed = parse_criteria(criteria)
+  print 'Parsed ' + criteria + ' ' + str(parsed)
   if parsed == None : return False
-  result = evaluate_parsed_criteria(parsed, genosets, genome)
+  result = evaluate_parsed_criteria(parsed, genosets, snps, genome)
   return result
   
 
@@ -507,7 +538,7 @@ def parse_criteria(criteria) :
   #return function_call.parseString(criteria).asList()[0]
 
 
-def evaluate_parsed_criteria(parsed, genosets, genome) :
+def evaluate_parsed_criteria(parsed, genosets, snps, genome) :
   print 'EVP : ', parsed
   if type(parsed) == str : # simple case
     import re
@@ -516,19 +547,41 @@ def evaluate_parsed_criteria(parsed, genosets, genome) :
       rsid = 'rs' + rs1.group(1)
       if not rsid in genome : return False
       genome_snp = genome[rsid]
+      if len(genome_snp[0]) == 1 : genome_snp[0] = genome_snp[0] + ' ' # can occur for male X-chromosome genotypes
+      if not rsid in snps : return False
+      snpdb_snp = snps[rsid]
+      if snpdb_snp[1] == 'p' :
+        orientation = +1
+      elif snpdb_snp[1] == 'm' :
+        orientation = -1
+      else:
+        orientation = 0
       req = rs1.group(2)
-      return match_single(genome_snp[0][0], req) != 0 or match_single(genome_snp[0][1], req) != 0
+      print 'compare', rsid, genome_snp[0], req, orientation
+      print '->', match_single(genome_snp[0][0], req, orientation) != 0 or match_single(genome_snp[0][1], req, orientation) != 0
+      return match_single(genome_snp[0][0], req, orientation) != 0 or match_single(genome_snp[0][1], req, orientation) != 0
     rs2 = re.match('rs([0-9]*)\(([A-Z,-]*);([A-Z,-]*)\)', parsed)
     if rs2 != None :
       rsid = 'rs' + rs2.group(1)
       if not rsid in genome : return False
       genome_snp = genome[rsid]
+      if len(genome_snp[0]) == 1 : genome_snp[0] = genome_snp[0] + ' ' # can occur for male X-chromosome genotypes
+      if not rsid in snps : return False
+      snpdb_snp = snps[rsid]
+      if snpdb_snp[1] == 'p' :
+        orientation = +1
+      elif snpdb_snp[1] == 'm' :
+        orientation = -1
+      else:
+        orientation = 0
       req = rs2.group(2) + rs2.group(3)
-      return match_genotypes(genome_snp[0], req)
+      print 'compare', genome_snp[0], req, orientation
+      print '->', match_genotypes(genome_snp[0], req, orientation)
+      return match_genotypes(genome_snp[0], req, orientation)
     gs  = re.match('gs([0-9]*)', parsed)
     if gs != None : 
       if not parsed in genosets : return False
-      return interpret_genoset_criteria(genosets[parsed][3], genosets, genome)
+      return interpret_genoset_criteria(genosets[parsed][3], genosets, snps, genome)
     print 'ERROR : unsupported string pattern %s in genoset evaluation' % parsed
   # now recursive case
   if len(parsed) != 2 :
@@ -539,17 +592,21 @@ def evaluate_parsed_criteria(parsed, genosets, genome) :
       print 'ERROR : atleast arguments do not start with a number as expected, got %2' % parsed[1][0]
       return None
     minval = int(parsed[1][0])
-    results = [ evaluate_parsed_criteria(item, genosets, genome) for item in parsed[1][1:] ]
+    results = [ evaluate_parsed_criteria(item, genosets, snps, genome) for item in parsed[1][1:] ]
     print results
+    print '->', sum(1 for item in results if item), '>=?', minval, '==>', (sum(1 for item in results if item) >= minval)
     return (sum(1 for item in results if item) >= minval)
-  results = [ evaluate_parsed_criteria(item, genosets, genome) for item in parsed[1] ] 
+  results = [ evaluate_parsed_criteria(item, genosets, snps, genome) for item in parsed[1] ] 
   print 'EVP : results = ', results, "'" + parsed[0] + "'"
+  if parsed[0] == 'and' : print '->', all(results)
+  if parsed[0] == 'or'  : print '->', any(results)
   if parsed[0] == 'and' : return all(results)
   if parsed[0] == 'or'  : return any(results)
   if parsed[0] == 'not' :
     if len(results) != 1 :
       print 'ERROR : passing %d arguments to "not" in %s, should be one' % (len(parsed[1]), str(parsed))
       return None
+    print '->', not results[0]
     return not results[0]
   print 'ERROR : unknown operator %s' % parsed[0]
   return None

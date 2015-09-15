@@ -2,5 +2,5 @@
 
 import sys
 import snptools
-snptools.make_genoset_db_output('genosets.db', 'genosets.html')
+snptools.make_genoset_db_output('data/genosets.db', 'genosets.html')
 
