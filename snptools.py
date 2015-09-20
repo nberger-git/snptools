@@ -3,653 +3,728 @@ import mwparserfromhell
 import re
 import shelve
 import time
-import os.path
+import os
 import sys
+import ConfigParser
 
-def download_snp_list(filename = 'snps') :
-  site = wiki.Wiki("http://bots.snpedia.com/api.php")                  # open snpedia
-  snps = category.Category(site, "Is_a_snp")
-  outfile = open(filename, 'w')
-  i = 0
-  for article in snps.getAllMembersGen(namespaces=[0]) :
-    snp = article.title.lower()
-    outfile.write(snp + '\n')
-    i = i + 1
-    if i % 1000 == 0 : print 'snp %5d : %20s' % (i, snp)
-  outfile.close()
+config_locations = [ os.path.join(loc, 'snptools.conf') for loc in [ os.curdir, os.path.expanduser("~/.snptools") ] ]
 
 
-def download_genotype_list(filename = 'genotypes') :
-  site = wiki.Wiki("http://bots.snpedia.com/api.php")                  # open snpedia
-  snps = category.Category(site, "Is_a_genotype")
-  outfile = open(filename, 'w')
-  i = 0
-  for article in snps.getAllMembersGen(namespaces=[0]) :
-    genotype = article.title.lower()
-    outfile.write(genotype + '\n')
-    i = i + 1
-    if i % 1000 == 0 : print 'genotype %5d : %20s' % (i, genotype)
-  outfile.close()
+class Config :  
+  def __init__(self, locs = config_locations) :
+    config = ConfigParser.SafeConfigParser()
+    found = config.read(locs)
+    if found == [] :
+      print 'ERROR : could not locate config file, tried ' + ', '.join(locs)
+      sys.exit(1)
+    try :
+      self.snp_db_file = os.path.expanduser(config.get('snps', 'db_file'))
+      self.snp_list_file = os.path.expanduser(config.get('snps', 'list_file'))
+      self.genotype_list_file = os.path.expanduser(config.get('genotypes', 'list_file'))
+      self.genoset_list_file = os.path.expanduser(config.get('genosets', 'list_file'))
+      self.genoset_db_file = os.path.expanduser(config.get('genosets', 'db_file'))
+      self.site = config.get('wiki', 'site')
+      self.css_style = config.get('html', 'css_style')
+      self.verbose = config.get('output', 'verbose')
+    except (ConfigParser.NoOptionError, ConfigParser.NoSectionError) as error :
+      error.message = error.message + '\nERROR : cannot read config file %s, exiting' % found[0]
+      raise
+    message = '%s file %s is not found, please run the data fetching utility first'
+    if not os.path.exists(self.snp_db_file)        : raise IOError, message % ('SNP database',     self.snp_db_file)
+    if not os.path.exists(self.snp_list_file)      : raise IOError, message % ('SNP list',         self.snp_list_file)
+    if not os.path.exists(self.genotype_list_file) : raise IOError, message % ('Genotype list',    self.genotype_list_file)
+    if not os.path.exists(self.genoset_list_file)  : raise IOError, message % ('Genoset list',     self.genoset_list_file)
+    if not os.path.exists(self.genoset_db_file)    : raise IOError, message % ('Genoset database', self.genoset_db_file)
 
 
-def download_genoset_list(filename = 'genosets') :
-  site = wiki.Wiki("http://bots.snpedia.com/api.php")                  # open snpedia
-  snps = category.Category(site, "Is_a_genoset")
-  outfile = open(filename, 'w')
-  i = 0
-  for article in snps.getAllMembersGen(namespaces=[0]) :
-    genoset = article.title.lower()
-    outfile.write(genoset + '\n')
-    i = i + 1
-    if i % 1000 == 0 : print 'genoset %5d : %20s' % (i, genoset)
-  outfile.close()
+class Data :
+  def __init__(self, config = None) :
+    self.config = config if config != None else Config()
+    self.l_snps = None
+    self.l_genosets = None
+    self.l_snp_list = None
+    self.l_genotype_list = None
+    self.l_genoset_list = None
+
+  def snps(self) :
+    if self.l_snps == None : self.l_snps = shelve.open(self.config.snp_db_file, 'r')
+    return self.l_snps
+  
+  def genosets(self) :
+    if self.l_genosets == None : self.l_genosets = shelve.open(self.config.genoset_db_file, 'r')
+    return self.l_genosets
+
+  def snp(self, snp_name) :
+    try :
+      return SNP(snp_name).deserialize(self.snps()[snp_name])
+    except KeyError :
+      return None
+
+  def genoset(self, genoset_name) :
+    try :
+      return SNPGenoset(name=genoset_name, data=self).deserialize(self.genosets()[genoset_name])
+    except KeyError :
+      return None
+
+  def load_list(self, filename) :
+    try:
+      infile = open(filename, 'r')
+    except IOError as error :
+      print error
+      return None;
+    output = []
+    for name in infile : output.append(name.rstrip('\n'))
+    return output
+    
+  def snp_list(self) :
+    if self.l_snp_list == None : self.l_snp_list = self.load_list(self.config.snp_list_file)
+    return self.l_snp_list
+
+  def genotype_list(self) :
+    if self.l_genotype_list == None : self.l_genotype_list = self.load_list(self.config.genotype_list_file)
+    return self.l_genotype_list
+
+  def genoset_list(self) :
+    if self.l_genoset_list == None : self.l_genoset_list = self.load_list(self.config.genoset_list_file)
+    return self.l_genoset_list
+
+  def dump_snp_db(self) : self.dump_db(self.snps())
+  def dump_genoset_db(self) : self.dump_db(self.genosets())
+  def dump_db(self, db) :
+    for key in db :
+      print key, db[key]
 
 
-def parse_name(name) :
-  splits = re.split('\(|;|\)', name)
-  if len(splits) > 4 : splits = splits[:-1]
-  root = splits[0]
-  if root[0]  == 'i'  and root[1:].isdigit() : return ['i']  + splits
-  if root[:2] == 'rs' and root[2:].isdigit() : return ['rs'] + splits
-  if root[:2] == 'gs' and root[2:].isdigit() : return ['gs'] + splits
-  return ['other'] + splits
+class WikiDownloader :
+  def __init__(self, config) :
+    self.config = config if config != None else Config()
+    self.site = wiki.Wiki(self.config.site)
 
+  def get_category(self, catname) :
+    cat = category.Category(self.site, catname)
+    items = []
+    for article in snps.getAllMembersGen(namespaces=[0]) :
+      items.append(article.title.lower())
+      if len(items) % 1000 == 0 : print 'Downloading item %5d : %20s' % (len(items), items[-1])
 
-def get_val(t, key) :
-  try:
-    return str(t.get(key).value).rstrip('\n')
-  except:
-    print 'WARNING : could not get attribute %s from template data' % key
-    #print 'INFO : could not get attribute %s from template data below \n' % key
-    #print t
+  def get_text(name) :
+    try:
+      pagehandle = page.Page(self.site, name)
+      return pagehandle.getWikiText()
+    except:
+      print 'ERROR : could not download page %s'
+      return None
+
+  def get_templates(name) :
+    text = self.get_text(name)
+    if not text : return []
+    wikicode = mwparserfromhell.parse(text)
+    return wikicode.filter_templates()
+
+  def get_val(templates, template_name, key, warn = True) :
+    for t in templates :
+      if t.name != template_name : continue
+      try:
+        return str(t.get(key).value).rstrip('\n')
+      except:
+        if warn : print 'WARNING : could not get attribute %s from template %s' % (template_name, key)
+        return ''
+    print 'WARNING : no template found with name %s' % template_name
     return ''
+    
 
-def load_list(filename = 'snps', verbose = False) :
-  infile = open(filename, 'r')
-  #return [ name.rstrip('\n') for name in infile ]
-  n_i = [0,0]
-  n_rs = [0,0]
-  n_gs = 0
-  n_other = [0,0]
-  output = []
-  for name in infile :
-    name = name.rstrip('\n')
-    parsed = parse_name(name)
-    gen = 0
-    if len(parsed) > 2 : gen = 1
-    if parsed[0] == 'i' :
-      n_i[gen] = n_i[gen] + 1
-      output.append(name)
-    elif parsed[0] == 'rs' :
-      n_rs[gen] = n_rs[gen] + 1
-      output.append(name)
-    elif parsed[0] == 'gs' :
-      n_gs = n_gs + 1
-      output.append(name)
-    else :
-      n_other[gen] = n_other[gen] + 1
-      if verbose : print 'INFO: skipping ' + name
+class DataGetter :
+  def __init__(self, config) :
+    self.config = config if config != None else Config()
+    self.wiki = WikiDownloader(config)
+    
+  def download_category(catname, output_file, overwrite = False) :
+    if os.path.exists(output_file) :
+      print 'INFO : output file %s already exists, skipping' % output_file
+      return False
+    print 'INFO : downloading category %s to file %s.' % (catname, output_file)
+    outfile = open(output_file, 'w')
+    for item in self.wiki.get_category(catname) :
+      outfile.write(item + '\n')
+    outfile.close()
   
-  print 'i-type  counts : %6d %6d' % (n_i[0], n_i[1])
-  print 'rs-type counts : %6d %6d' % (n_rs[0], n_rs[1])
-  print 'gs-type counts : %6d'     %  n_gs
-  print 'other   counts : %6d %6d' % (n_other[0], n_other[1])
-  return output
+  def download_snp(snp_name, geno_dict = {}) :
+    snp = SNP(snp_name)
+    templates = self.wiki.get_templates(snp_name)
+    chromosome = self.wiki.get_val(templates, 'Rsnum\n', 'Chromosome')
+    snp.chromosome = int(chromosome) if chromosome.isdigit() else None
+    snp.gene = self.wiki.get_val(templates, 'Rsnum\n', 'Gene')
+    position = self.wiki.get_val(templates, 'Rsnum\n', 'position')
+    snp.position = int(position) if position.isdigit() else None
+    snp.genome_build = self.wiki.get_val(templates, 'Rsnum\n', 'GenomeBuild')
+    snp.dbSNP_build = self.wiki.get_val(templates, 'Rsnum\n', 'dbSNPBuild')
+    snp.orientation = self.wiki.get_val(tt[0], 'Orientation')
+    snp.stabilized_orientation = self.wiki.get_val(tt[0], 'StabilizedOrientation')
+    snp.genotypes = {}
+    for i in range(1,3) :
+      val = self.wiki.get_val(templates, 'Rsnum\n', 'geno%d' % i, False) 
+      if val != '' :
+        genotype_name = snp_name + val
+        if len(geno_dict) and not genotype_name.lower() in geno_dict :
+          print '*** WARNING : genotype %s not in list, adding placeholder instead ' % genotype_name
+          genotype = SNPGenotype(snp_name, val)
+        else :
+          genotype = download_genotype(snp_name, val)
+        snp.genotypes[val] = genotype
+    if snp.genotypes == {} : return None # no genotypes => not interesting!
+    return snp
+
+  def download_genotype(snp_name, genotype_name) :
+    genotype = SNPGenotype(snp_name, genotype_name)
+    templates = self.wiki.get_templates(genotype.full_name())
+    genotype.magnitude = get_val(templates, 'Genotype\n', 'magnitude')
+    try :
+      genotype.magnitude = float(genotype.magnitude)
+    except :
+      genotype.magnitude = None
+    genotype.summary   = get_val(templates, 'Genotype\n', 'summary')
+    genotype.repute = self.wiki.get_val(templates, 'Genotype\n', 'repute').lower()
+    if genotype.magnitude != 'good' and genotype.magnitude != 'bad' : genotype.magnitude = None
+    return genotype
+
+  def download_genoset(genoset_name) :
+    genoset = SNPGenoset(genoset_name)
+    templates = self.wiki.get_templates(genoset_name)
+    genoset.repute = self.wikiget_val(templates, 'Genoset', 'Repute').lower()
+    if genoset.repute != 'good' and genoset.repute != 'bad' : genoset.repute = None
+    genoset.magnitude = get_val(templates, 'Genoset', 'Magnitude')
+    try : 
+      genoset.magnitude = int(genoset.magnitude) 
+    except : 
+      genoset.magnitude = None
+    genoset.summary   = get_val(templates, 'Genoset', 'Summary')
+    criteria_page = self.wiki.get_text(genoset_name + '/criteria')
+    # remove # comments
+    criteria_text = ''
+    for l in criteria_page.split('\n') : 
+      toks = l.split()
+      if len(toks) == 0 : continue
+      if toks[0] == '#' : continue
+      criteria_text = criteria_text + l + '\n'
+    # remove HTML comments
+    import lxml.html as LH
+    doc = LH.fromstring(criteria_text)
+    criteria = doc.text_content()
+    criteria = criteria.replace(' ', '').replace('\n', '').replace('\t', '')
+    genoset.criteria = append(criteria)
+    return genoset
+
+  def download_lists(overwrite = False) :
+    self.download_category('Is_a_snp',      self.config.snp_list_file)
+    self.download_category('Is_a_genotype', self.config.genotype_list_file)
+    self.download_category('Is_a_genoset',  self.config.genoset_list_file)
+    
+  def download_genosets() :
+    start_time = time.time()
+    genosets = self.load_list(self.config.genoset_list_file, True)
+    if os.path.exists(self.config.genoset_db_file) :
+      print 'ERROR : DB file %s already exists, will not overwrite. Exiting now' % self.config.genoset_db_file
+      return
+    print 'INFO : writing to DB file ' + self.config.genoset_db_file
+    num = -1
+    processed = 0
+    shelf = shelve.open(self.config.genoset_db_file)
+    for line in genosets :
+      num = num + 1
+      name = line.rstrip('\n')
+      genoset = download_genoset(name)
+      if genoset == None : 
+        print '*** ERROR downloading genoset ' + name + ', skipping'
+      elif genoset != [] : 
+        print 'INFO : writing genoset %s, index %d' % (name, num)
+        shelf[name] = genoset
+        processed = processed + 1
+      if processed % 10 == 0 : 
+        print 'INFO : syncing DB file ' + output
+        shelf.sync()
+    print 'INFO : processed %d entries in %.1f seconds' % (processed, time.time() - start_time)
+    print 'INFO : closing DB file ' + output
+    shelf.close()
 
 
-def download_snp_chunk(snpfile, genotypefile, first, last, output) :
-  start_time = time.time()
-  snps = load_list(snpfile, True)
-  genotypes = load_list(genotypefile, True)
-  num = -1
-  proc = 0
-  geno_dict = { geno : True for geno in genotypes }
-  if os.path.exists(output) :
-    print 'ERROR : DB file %s already exists, will not overwrite. Exiting now' % output
-    return
-  print 'INFO : writing to DB file ' + output
-  shelf = shelve.open(output)
-  for line in snps :
-    num = num + 1
-    if num < first or num >= last : continue
-    name = line.rstrip('\n')
-    snp = download_snp(name, geno_dict)
+class Allele :
+  def __init__(self, allele, orientation) :
+    self.orientation = orientation if orientation == 'plus' or orientation == 'minus' else None
+    upal = allele.upper()
+    if re.match('[ATCG]+', upal) : self.allele = upal # for I/D genotypes, the 'I' case may have mroe than 1 base
+    elif upal == 'I' : self.allele = '.'
+    elif upal == '-' : self.allele = '-'
+    elif upal == 'D' : self.allele = '-'
+    else :
+      print 'ERROR : invalid allele %s in genotype' % allele
+      self.allele = None
+  
+  def plus_allele(self) :
+    if self.orientation == None : return None
+    if self.orientation == 'plus' : return self.allele
+    if self.allele == '.' : return '.'
+    if self.allele == '-' : return '-'
+    flipmap = { 'A' : 'T', 'T' : 'A', 'C' : 'G', 'G' : 'C' }
+    return ''.join(flipmap[c] for c in self.allele)
+  
+  def match(self, other) :
+    u1 = self.plus_allele()
+    u2 = other.plus_allele()
+    print 'yyy comparing', u1, u2
+    if u1 == u2 : return True
+    if u1 == '.' and u2 != '-' : return True
+    if u2 == '.' and u1 != '-' : return True
+    return False
+
+  @staticmethod
+  def split(genotype, orientation) :
+    if len(genotype) <= 2 : return [ Allele(c, orientation) for c in genotype ] # A or GG
+    if genotype[0] == '-' : return [ Allele(genotype[0], orientation), Allele(genotype[1:], orientation) ] # -ACG
+    l = len(genotype)
+    if l % 2 == 0 : return [Allele(genotype[0:l/2], orientation), Allele(genotype[l/2:], orientation) ] # ACGACG
+    return None
+
+class SNP :
+  def __init__(self, name) :
+    self.name = name
+    self.chromosome = None
+    self.gene = None
+    self.position = None
+    self.genome_build = None
+    self.dbSNP_build = None
+    self.orientation = None
+    self.stabilized_orientation = None
+    self.genotypes = {}
+    
+  def match(self, genotype) :
+    print 'xxx comparing', genotype.genotype, 'to snp', self.name
+    if genotype.chromosome != None and self.chromosome != None and genotype.chromosome != self.chromosome : return []
+    if genotype.position != None and self.position != None and genotype.position != self.position : return []
+    matches = [ self.genotypes[g] for g in self.genotypes if self.genotypes[g].match(genotype) ]
+    print 'xxx matches:', ','.join(g.genotype for g in matches)
+    return matches
+
+  def serialize(self) :
+    record = [ self.chromosome, self.gene, self.position, self.genome_build, self.dbSNP_build ]
+    ori = '-'
+    sor = '-'
+    if len(self.orientation) > 0 : ori = self.orientation[0]
+    if len(self.stabilized_orientation) > 0 : sor = self.stabilized_orientation[0]
+    record.append(ori + sor)
+    genotype_records = {}
+    for geno in self.genotypes :
+      genotype_records[geno] = self.genotypes[geno].serialize()
+    record.append(genotype_records)
+    return record
+  
+  def deserialize(self, record) :
+    # HACK for now
+    self.chromosome = record[0]
+    self.gene = record[2]
+    self.position = int(record[3]) if record[3].isdigit() else None
+    self.genome_build = record[4]
+    self.dbSNP_build = record[5]
+    ori = record[1][0] if len(record[1]) > 0 else None
+    if ori == 'p' : self.orientation = 'plus'
+    elif ori == 'm' : self.orientation = 'minus'
+    self.stabilized_orientation = self.orientation
+    for geno in record[6] :
+      self.genotypes[geno[0]] = SNPGenotype(self, geno[0]).deserialize(geno[1])
+    return self
+    #end HACK
+    try :
+      self.chromosome = record[0]
+      self.gene = record[1]
+      self.position = record[2]
+      self.genome_build = record[3]
+      self.dbSNP_build = record[4]
+      ori = record[5][0]
+      if ori == 'p' : self.orientation = 'plus'
+      elif ori == 'm' : self.orientation = 'minus'
+      else : self.orientation = None
+      sor = record[5][1]
+      if sor == 'p' : self.stabilized_orientation = 'plus'
+      elif sor == 'm' : self.stabilized_orientation = 'minus'
+      else : self.stabilized_orientation = None
+      for geno in record[6] :
+        self.genotypes[geno] = SNPGenotype(self, geno).deserialize(record[6][geno])
+    except KeyError as error :
+      error.message = error.message + '\nERROR : could not deserialize snp record %s' % record
+      raise
+    return self
+      
+class SNPGenotype() :
+  def __init__(self, snp, genotype) :
+    self.genotype = genotype
+    self.snp = snp
+        
+  def full_name(self) : 
+    return self.snp.name + self.genotype
+
+  def alleles(self) :
+    return Allele.split(self.genotype, self.snp.orientation)
+
+  def match(self, genotype) :
+    ref_alleles = self.alleles()
+    gen_alleles = genotype.alleles()
+    if len(ref_alleles) == 1 : # snp_genotypes specifies 1 allele : can match either of ours
+      for a in gen_alleles : 
+        if a.match(ref_alleles[0]) : return True
+      return False
+    if len(ref_alleles) == 2 : # snp_genotypes specifies 2 allele : must match both of ours
+      if len(gen_alleles) != 2 : return False
+      print 'xxx compare genotype gen', ','.join(al.allele for al in gen_alleles)
+      print 'xxx compare genotype snp', ','.join(al.allele for al in ref_alleles)
+      if gen_alleles[0].match(ref_alleles[0]) and gen_alleles[1].match(ref_alleles[1]) : return True
+      if gen_alleles[0].match(ref_alleles[1]) and gen_alleles[1].match(ref_alleles[0]) : return True
+      return False
+    return False
+
+  def match_genome(self, genome) :
+    genotype = genome.genotype(self.snp.name)
+    return self.match(genotype) if genotype else False
+
+  def serialize(self) :
+    if self.repute == 'good' : rep = True 
+    elif repute == 'bad' : rep = False
+    else : rep = None
+    return [ self.magnitude, rep, self.summary ]
+  
+  def deserialize(self, record) :
+    # HACK for now
+    try:
+      self.magnitude = float(record[0])
+    except:
+      self.magnitude = None
+    self.summary = record[1]
+    rep = record[2]
+    if rep == 'g' :  self.repute = 'good'
+    elif rep == 'b' : self.repute = 'bad'
+    else : self.repute = None
+    return self
+    #end HACK
+    try :
+      try:
+        self.magnitude = float(record[0])
+      except : self.magnitude = None
+      if record[1] == True : self.repute = 'good'
+      elif record[1] == False : self.repute = 'bad'
+      else : self.repute = None
+      self.summary = record[2]
+    except KeyError as error :
+      error.message = error.message + '\nERROR : could not deserialize genotype record %s' % record
+      raise
+    return self
+
+class SNPGenoset() :
+  def __init__(self, name = None, criteria = None, parsed = None, data = None) :
+    self.name = name
+    self.magnitude = None
+    self.repute = None
+    self.criteria = criteria
+    self.summary = None
+    self.parsed = parsed
+    self.data = data if data != None else Data()
+
+  def parsed_criteria(self) :
+    print 'qqq1', self.name, self.criteria, self.parsed
+    if self.parsed != None : return self.parsed
+    from pyparsing import Combine, Word, alphas, nums, Forward, Suppress, Group, ZeroOrMore, Optional, ParseException
+    function_call = Forward()
+    identifier =  Word(alphas)
+    gt = Word( alphas + '-')
+    gs =  Combine('gs' + Word(nums))
+    rs1 =  Combine('rs' + Word(nums) + '(' + gt + ')')
+    rs2 =  Combine('rs' + Word(nums) + '(' + gt + ';' + gt + ')')
+    i1 =  Combine('i' + Word(nums) + '(' + gt + ')')
+    i2 =  Combine('i' + Word(nums) + '(' + gt + ';' + gt + ')')
+    numb = Word(nums)
+    arg = function_call | rs1 | rs2 | i1 | i2 | gs | numb
+    function_call <<= Group(identifier + Suppress('(') + Group(ZeroOrMore(arg + Suppress(",")) + Optional(arg)) + Suppress(')'))
+    try:
+      result = arg.parseString(self.criteria).asList()[0]
+    except ParseException as error :
+      #error.message = error.message + '\nERROR : could not parse criteria %s' % self.criteria
+      #raise
+      print  'ERROR : could not parse criteria %s' % self.criteria
+      result = []
+    self.parsed = result
+    print 'qqq', result
+    return self.parsed
+
+  def parse_snp_genotype(self) : 
+    match = re.match('(rs|i)([0-9]*)\((([A-Z]|-)*)(;(([A-Z]|-)*))?\)', self.parsed_criteria())
+    if match == None : return None
+    snp = self.data.snp(match.group(1) + match.group(2))
     if snp == None : 
-      print '*** ERROR downloading SNP ' + name + ', skipping'
-    elif snp != [] : 
-      print 'INFO : writing SNP %s, index %d (range %d to %d)' % (name, num, first, last)
-      shelf[name] = snp
-      proc = proc + 1
-      if proc % 10 == 0 : 
-        print 'INFO : syncing DB file ' + output
-        shelf.sync()
-  print 'INFO : processed %d entries in %.1f seconds' % (proc, time.time() - start_time)
-  print 'INFO : closing DB file ' + output
-  shelf.close()
+      print 'WARNING : while evaluating criteria %s, encountered unknown SNP %s' % (self.parsed_criteria(), match.group(1) + match.group(2))
+      return False
+    print 'ggg', snp.name, match.groups()
+    return SNPGenotype(snp, match.group(3) + (match.group(6) if match.group(6) else ''))
+
+  def parse_genoset(self) :
+    gs  = re.match('gs([0-9]*)', self.parsed_criteria())
+    if gs == None : return None
+    return self.data.genoset(self.parsed_criteria())
     
-
-def download_snp(name, geno_dict = {}) :
-  print 'Downloading ' + name
-  parsed = parse_name(name)
-  if parsed[0] != 'rs' : 
-    print 'INFO : SNP %s is not rs-type, skipping' % name # only handle rsXXXXX for now
-    return []
-  try:
-    site = wiki.Wiki("http://bots.snpedia.com/api.php")
-    pagehandle = page.Page(site, name)
-    snp_page = pagehandle.getWikiText()
-  except:
-    print 'ERROR : could not download snp %s, skipping'
+  def match_genome(self, genome) :
+    if type(self.parsed_criteria()) == str : # simple case : a single expression
+      snp_genotype = self.parse_snp_genotype()
+      if snp_genotype == False : return False # SNP not present, skip
+      if snp_genotype != None : return snp_genotype.match_genome(genome)
+      # it is None => could not parse
+      genoset = self.parse_genoset()
+      if genoset : return genoset.match_genome(genome)
+      print 'ERROR : unsupported string pattern %s in genoset evaluation' % self.parsed_criteria()
+      return False
+    # If not, we have a function
+    if len(self.parsed_criteria()) != 2 :
+      print 'ERROR : parsed criteria %s do not have 2 items (function and argument list) as expected' % str(self.parsed_criteria())
+      return False
+    func = self.parsed_criteria()[0]
+    args = self.parsed_criteria()[1]
+    if func == 'atleast' :
+      if not args[0].isdigit :
+        print 'ERROR : atleast arguments do not start with a number as expected, got %2' % args[0]
+        return False
+      minval = int(args[0])
+      results = [ SNPGenoset(parsed=item, data=self.data).match_genome(genome) for item in args[1:] ]
+      print results
+      print '->', sum(1 for item in results if item), '>=?', minval, '==>', (sum(1 for item in results if item) >= minval)
+      return (sum(1 for item in results if item) >= minval)
+    # other functions now:
+    print '???', args
+    results = [ SNPGenoset(parsed=item, data=self.data).match_genome(genome) for item in args ] 
+    print 'EVP : results = ', results, "'" + func + "'"
+    if func == 'and' : print '->', all(results)
+    if func == 'or'  : print '->', any(results)
+    if func == 'and' : return all(results)
+    if func == 'or'  : return any(results)
+    if func == 'not' :
+      if len(results) != 1 :
+        print 'ERROR : passing %d arguments to "not" in %s, should be one' % (len(args), str(self.parsed_criteria()))
+        return None
+      print '->', not results[0]
+      return not results[0]
+    print 'ERROR : unknown operator %s' % func
     return None
-  wikicode = mwparserfromhell.parse(snp_page)
-  tt = wikicode.filter_templates()
-  if tt[0].name != 'Rsnum\n' :
-    print '*** ERROR : rs-type SNP %s has invalid record without an Rsnum entry' % name
-    return None
-  ok_v4 = False
-  for t in tt : 
-    if t.name == 'on chip ' and t.params[0] == ' 23andMe v4' :
-      ok_v4 = True
-      break
-  if not ok_v4 :
-    print 'INFO : skipping SNP %s since it is not on the 23andMe v4 chip' % name
-    return []
-  # Next time: add allele freq information from SNP "population diversity" template (see e.g. rs2011077)
-  snp = [ #get_val(tt[0], 'rsid'), 
-          get_val(tt[0], 'Chromosome'), 
-          '', 
-          get_val(tt[0], 'Gene'), 
-          get_val(tt[0], 'position'), 
-          #get_val(tt[0], 'Assembly'), 
-          get_val(tt[0], 'GenomeBuild'), 
-          get_val(tt[0], 'dbSNPBuild') ]
-  o1 = get_val(tt[0], 'Orientation')
-  o2 = get_val(tt[0], 'StabilizedOrientation')
-  if len(o1) > 0 : 
-    snp[1] = o1[0]
-  else :
-    snp[1] = '-'
-  if len(o2) > 0 : 
-    snp[1] = snp[1] + o2[0] 
-  else :
-    snp[1] = snp[1] + '-'    
-  genos = []
-  for i in range(1,5) :
-    if tt[0].has('geno%d' % i) : 
-      genotype = name + get_val(tt[0], 'geno%d' % i)
-      parse_geno = parse_name(genotype)
-      if len(geno_dict) and not genotype.lower() in geno_dict :
-        print '*** WARNING : adding placeholder genotype for ' + genotype
-        genos.append((parse_geno[2] + parse_geno[3], ['','','']))
-      else :
-        geno_data = download_genotype(genotype)
-        genos.append((parse_geno[2] + parse_geno[3], geno_data))
-  if genos == [] : return [] # no genotypes => not interesting!
-  snp.append(genos)
-  return snp
 
-
-def download_genotype(genotype) :
-  print 'Downloading ' + genotype
-  site = wiki.Wiki("http://bots.snpedia.com/api.php")
-  try:
-    pagehandle = page.Page(site, genotype)
-    snp_page = pagehandle.getWikiText()
-  except:
-    print '*** ERROR : genoset %s cannot be downloaded' % genotype
-    return None
-  wikicode = mwparserfromhell.parse(snp_page)
-  tt = wikicode.filter_templates()
-  repute_interp = { "good" : "g", "bad" : "b", "" : "" }
-  t = tt[0]
-  for t in tt :
-    if t.name == 'Genotype\n' : break
-  if t.name != 'Genotype\n' :
-    print '*** ERROR : rs-type genotype %s has invalid record without a Genotype entry' % genotype
-    return None
-  repute = get_val(t, 'repute').lower()
-  if repute in repute_interp : 
-    repute_short = repute_interp[repute]
-  else :
-    repute_short = ''
-  gen_data = [ get_val(t, 'magnitude'), 
-               get_val(t, 'summary'),
-               repute_short ]
-  return gen_data
-
-
-def download_genosets(genosetfile, output) :
-  start_time = time.time()
-  genosets = load_list(genosetfile, True)
-  num = -1
-  proc = 0
-  if os.path.exists(output) :
-    print 'ERROR : DB file %s already exists, will not overwrite. Exiting now' % output
-    return
-  print 'INFO : writing to DB file ' + output
-  shelf = shelve.open(output)
-  for line in genosets :
-    num = num + 1
-    name = line.rstrip('\n')
-    genoset = download_genoset(name)
-    if genoset == None : 
-      print '*** ERROR downloading genoset ' + name + ', skipping'
-    elif genoset != [] : 
-      print 'INFO : writing genoset %s, index %d' % (name, num)
-      shelf[name] = genoset
-      proc = proc + 1
-      if proc % 10 == 0 : 
-        print 'INFO : syncing DB file ' + output
-        shelf.sync()
-  print 'INFO : processed %d entries in %.1f seconds' % (proc, time.time() - start_time)
-  print 'INFO : closing DB file ' + output
-  shelf.close()
-    
-
-def download_genoset(name) :
-  print 'Downloading ' + name
-  site = wiki.Wiki("http://bots.snpedia.com/api.php")
-  try:
-    pagehandle = page.Page(site, name)
-    genoset_page = pagehandle.getWikiText()
-    wikicode = mwparserfromhell.parse(genoset_page)
-    pagehandle = page.Page(site, name + '/criteria')
-    criteria_page = pagehandle.getWikiText()
-  except:
-    print 'ERROR : could not download genoset %s, skipping' % name
-    return None
-  tt = wikicode.filter_templates()
-  if tt[0].name.rstrip('\n').rstrip(' ') != 'Genoset' :
-    print '*** ERROR : genoset %s has invalid record without a Genoset entry' % name
-    return None
-  repute_interp = { "good" : "g", "bad" : "b", "" : "" }
-  repute = get_val(tt[0], 'Repute').lower()
-  if repute in repute_interp : 
-    repute_short = repute_interp[repute]
-  else :
-    repute_short = ''
-  genoset = [ get_val(tt[0], 'Magnitude'), 
-              get_val(tt[0], 'Summary'),
-              repute_short ]
-  # remove # comments
-  crit_text = ''
-  for l in criteria_page.split('\n') : 
-    print l
-    toks = l.split()
-    if len(toks) == 0 : continue
-    if toks[0] == '#' : continue
-    crit_text = crit_text + l + '\n'
-  # remove HTML comments
-  import lxml.html as LH
-  doc = LH.fromstring(crit_text)
-  criteria = doc.text_content()
-  criteria = criteria.replace(' ', '').replace('\n', '').replace('\t', '')
-  #import re
-  #match = re.match('([a-z]*)\((.*)\)', criteria)
-  #if match == None or len(match.groups()) != 2 : 
-    #print '*** ERROR : genoset %s has invalid criteria %s' % (name, criteria)
-    #return None
-  #genoset.append(match.group(1))
-  #genoset.append(match.group(2).split(','))
-  genoset.append(criteria)
-  return genoset
-
-
-def merge_db(db_list, output) :
-  print 'INFO : merging to ' + output
-  output_db = shelve.open(output)
-  for db_file in db_list :
-    print 'INFO : ==> opening ' + db_file
-    db = shelve.open(db_file, 'r')
-    for snp in db : output_db[snp] = db[snp]
-  output_db.close()
+  def serialize(self) :
+    if self.repute == 'good' : rep = True 
+    elif repute == 'bad' : rep = False
+    else : rep = None
+    return [ self.magnitude, rep, self.criteria, self.summary ]
   
-
-def dump_db(filename) :
-  db = shelve.open(filename, 'r')
-  for key in db :
-    print key, db[key]
-
-    
-def read_genome(filename) :
-  gen_file = open(filename, 'r')
-  genome = {}
-  for line in gen_file :
-    tokens = line.split()
-    if len(tokens) == 0 or tokens[0] == '#' : continue
-    if len(tokens) != 4 or not tokens[2].isdigit() :
-      print 'ERROR : invalid line "%s" while reading in genome' % line
-      continue
-    genome[tokens[0]] = [ tokens[3], tokens[1], tokens[2] ]
-  return genome
-
-
-def match_single(b1, b2, orientation = 0, rec = True) :
-  u1 = b1.upper()
-  u2 = b2.upper()
-  if u1 == u2 :
-    if orientation == -1 : 
-      print 'WARNING: removing ' + u1 + u2 + ' positive match against orientation!'
-    else :
-      return +1
-  if (u1 == 'A' and u2 == 'T') or (u1 == 'C' and u2 == 'G') :
-    if orientation == +1 : 
-      print 'WARNING: removing ' + u1 + u2 + ' negative match against orientation!'
-    else : 
-      return -1
-  if u1 == 'D' and u2 == '-' : return +1
-  if u1 == 'I' and re.match('[ATCG]+', u2) : return +1
-  if rec :
-    rev = match_single(u2, u1, orientation, False) 
-    if rev != 0 : return rev
-  return 0
-
-  
-def match_genotypes(t1, t2, orientation = 0) :
-  if len(t1) != 1 and len(t1) != 2 : 
-    print 'ERROR : invalid genotype in match :  "%s"' % t1
-    return False
-  if len(t2) != 1 and len(t2) != 2 : 
-    print 'ERROR : invalid genotype in match "%s"' % t2
-    return False
-  if len(t1) != len(t2) :
-    print 'ERROR : genotype length mismatch : "%s" and "%s" ' % (t1, t2)
-    return False  
-  if match_single(t1[0], t2[0], orientation)*match_single(t1[1], t2[1], orientation) == 1 : return True
-  if match_single(t1[0], t2[1], orientation)*match_single(t1[1], t2[0], orientation) == 1 : return True
-  return False
-
-
-def match_genotype_list(genome_gt, ref_gt_list, orientation = 0) :
-  matches = []
-  for ref_gt in ref_gt_list :
-    if match_genotypes(genome_gt, ref_gt, orientation) : matches.append(ref_gt)
-  return matches
-
-
-def interpret_snps(genome_file, db_file) :
-  genome = read_genome(genome_file)
-  db = shelve.open(db_file, 'r')
-  results = {}
-  for snpid in db :
-    if not snpid in genome : 
-      print 'INFO : genome SNP %s is not in the database' % snpid
-      continue
-    ref_snp = db[snpid]
-    genome_snp = genome[snpid]
-    matches = interpret_snp(snpid, ref_snp, genome_snp)
-    if len(matches) == 0 : continue
-    result_data = [ genome_snp[0], matches[0] ]
-    ref_genotype_data = { geno[0] : geno[1] for geno in ref_snp[6] }
-    print snpid
-    result_data.extend(ref_genotype_data[matches[0]])
-    results[snpid] = result_data
-  return results
-    
-    
-def interpret_snp(snpid, ref_snp, genome_snp) :
-  if ref_snp[0] != genome_snp[1] :
-    print 'ERROR : mismatch in chromosome data for snp %s : reference has "%s", genome has "%s". Skipping' % (snpid, ref_snp[0], genome_snp[1]) 
-    return []
-  #if ref_snp[3] != genome_snp[2] :
-    #print 'WARNING : mismatch in position data for snp %s : reference has "%s", genome has "%s"' % (snpid, ref_snp[3], genome_snp[2]) 
-    #continue
-  ref_genotypes = [ geno[0] for geno in ref_snp[6] ]
-  print 'DEBUG : testing genotype list %s for genome %s' % (str(ref_genotypes), genome_snp[0])
-  if ref_snp[1] == 'p' :
-    orientation = +1
-  elif ref_snp[1] == 'm' :
-    orientation = -1
-  else:
-    orientation = 0
-  matches = match_genotype_list(genome_snp[0], ref_genotypes, orientation)
-  print 'MATCHDEBUG', snpid, ref_genotypes, genome_snp[0], matches
-  if len(matches) > 1 : 
-    print 'WARNING : ambiguous matches for SNP %s : genotype %s matches %d of %s' % (snpid, genome_snp[0], len(matches), str(ref_genotypes))
-    matches = []
-  return matches
-
-
-css_style = '''<style> 
-table {
-  border-collapse: collapse;
-  border-top: 1px solid darkblue;
-  border-bottom: 1px solid darkblue;
-}
-td {
-font-size:1.2em;
-#border: 1px solid;
-border-top: 1px solid darkblue;
-#border-bottom: 1px solid darkblue;
-padding:2px 10px 2px 10px;
-}
-th {
-font-size:1.4em;
-text-align:left;
-padding:5px 0px 5px 0px;
-background-color: red;  
-#color:#fff;
-}
-</style>
-'''
-
-def make_snp_output(snp_results, snps_file, output, mag_cutoff = 2, mode = 'w') :
-  snps = shelve.open(snps_file, 'r')
-  sorted_results = []
-  for snpid in snp_results : 
-    mag = snp_results[snpid][2]
+  def deserialize(self, record) :
+    # HACK for now
+    print 'rrr', self.name, record
     try:
-      mag = float(mag)
+      self.magnitude = float(record[0])
     except:
-      mag = 0
-    sorted_results.append((snpid, mag))
-  sorted_results = sorted(sorted_results, key=lambda entry: entry[1], reverse=True)
-  outfile = open(output, mode)
-  outfile.write(css_style)
-  outfile.write('<h1> SNP Results </h1> <table>\n')
-  outfile.write('<tr><td> SNP ID </td><td> Chr. </td><td> Gene </td><td> Individual Genotype </td><td> Matched Genotype </td><td> Significance </td><td> Description </td>\n')
-  for snpid, mag in sorted_results :
-    if mag < mag_cutoff : break # list is sorted
-    results = snp_results[snpid]
-    snp = snps[snpid]
-    outfile.write('  <tr><td> %s </td><td> %s </td><td> %s </td> <td> %s </td>  <td> %s </td> ' % (snpid, snp[0], snp[2], results[0], results[1]))  # snpid and genotypes
-    mag_style = ''
-    #if results[4] == 'g' : mag_style = ' style="background-color:green'
-    #elif results[4] == 'b' : mag_style = ' style="background-color:red'
-    if results[4] == 'g' : mag_style = '  bgcolor="#00FF00"'
-    elif results[4] == 'b' : mag_style = '  bgcolor="#FF0000"'
-    outfile.write('<td%s> %s </td> <td> %s </td>' % (mag_style, results[2], results[3]))  # magnitude and summary
-    outfile.write('<tr>\n')
-  outfile.write('</table>\n')
-
-
-def interpret_genosets(genome_file, genoset_file, snp_file) :
-  genome = read_genome(genome_file)
-  genosets = shelve.open(genoset_file, 'r')
-  snps = shelve.open(snp_file, 'r')
-  results = {}
-  for genoset in genosets :
-    print 'Genoset ' + genoset
-    if interpret_genoset_criteria(genosets[genoset][3], genosets, snps, genome) :
-      print '==> passed', genoset
-      results[genoset] = genosets[genoset]
-  return results
-
-def make_genoset_output(genoset_results, output, mag_cutoff = 2, mode = 'w') :
-  sorted_results = []
-  for snpid in genoset_results : 
-    mag = genoset_results[snpid][0]
-    try:
-      mag = float(mag)
-    except:
-      mag = 0
-    sorted_results.append((snpid, mag))
-  sorted_results = sorted(sorted_results, key=lambda entry: entry[1], reverse=True)
-  outfile = open(output, mode)
-  outfile.write(css_style)
-  outfile.write('<h1> Genoset Results </h1> <table>\n')
-  outfile.write('  <tr><td> Genoset ID </td><td> Significance </td><td> Description </td>\n')
-  for genoid, mag in sorted_results :
-    if mag < mag_cutoff : break # list is sorted
-    results = genoset_results[genoid]
-    outfile.write('  <tr><td> %s </td>' % genoid)
-    mag_style = ''
-    #if results[4] == 'g' : mag_style = ' style="background-color:green'
-    #elif results[4] == 'b' : mag_style = ' style="background-color:red'
-    if results[2] == 'g' : mag_style = '  bgcolor="#00FF00"'
-    elif results[2] == 'b' : mag_style = '  bgcolor="#FF0000"'
-    outfile.write('<td%s> %s </td> <td> %s </td>' % (mag_style, results[0], results[1]))  # magnitude and summary
-    outfile.write('<tr>\n')
-  outfile.write('</table>\n')
-      
-      
-def interpret_genoset_criteria(criteria, genosets, snps, genome) :
-  parsed = parse_criteria(criteria)
-  print 'Parsed ' + criteria + ' ' + str(parsed)
-  if parsed == None : return False
-  result = evaluate_parsed_criteria(parsed, genosets, snps, genome)
-  return result
+      self.magnitude = None
+    if record[2] == 'g' : self.repute = 'good'
+    elif record[2] == 'b' : self.repute = 'bad'
+    else : self.repute = None
+    self.criteria = record[3]
+    self.summary = record[1]    
+    return self
+    #end HACK
+    try :
+      self.magnitude = record[0]
+      if record[1] == True : self.repute = 'good'
+      elif record[1] == False : self.repute = 'bad'
+      else : self.repute = None
+      self.criteria = record[2]
+      self.summary = record[3]
+    except KeyError as error :
+      error.message = error.message + '\nERROR : could not deserialize genoset record %s' % record
+      raise
+    return self
   
 
-def parse_criteria(criteria) :
-  criteria = criteria.replace('\n', '').replace(' ', '').replace('\t', '')
-  # criteria sometimes contains XML-style comments... remove them:
-  import lxml.html as LH
-  doc = LH.fromstring(criteria)
-  criteria = doc.text_content()
-  from pyparsing import Combine, Word, alphas, nums, Forward, Suppress, Group, ZeroOrMore, Optional
-  function_call = Forward()
-  identifier =  Word(alphas)
-  gt = Word( alphas + '-')
-  gs =  Combine('gs' + Word(nums))
-  rs1 =  Combine('rs' + Word(nums) + '(' + gt + ')')
-  rs2 =  Combine('rs' + Word(nums) + '(' + gt + ';' + gt + ')')
-  i1 =  Combine('i' + Word(nums) + '(' + gt + ')')
-  i2 =  Combine('i' + Word(nums) + '(' + gt + ';' + gt + ')')
-  numb = Word(nums)
-  arg = function_call | rs1 | rs2 | i1 | i2 | gs | numb
-  function_call <<= Group(identifier + Suppress('(') + Group(ZeroOrMore(arg + Suppress(",")) + Optional(arg)) + Suppress(')'))
-  try:
-    result = arg.parseString(criteria).asList()[0]
-  except :
-    print 'ERROR : could not parse criteria %s' % criteria
-    return None
-  return result
-  #return function_call.parseString(criteria).asList()[0]
-
-
-def evaluate_parsed_criteria(parsed, genosets, snps, genome) :
-  print 'EVP : ', parsed
-  if type(parsed) == str : # simple case
-    import re
-    rs1 = re.match('rs([0-9]*)\(([A-Z,-]*)\)', parsed)
-    if rs1 != None :
-      rsid = 'rs' + rs1.group(1)
-      if not rsid in genome : return False
-      genome_snp = genome[rsid]
-      if len(genome_snp[0]) == 1 : genome_snp[0] = genome_snp[0] + ' ' # can occur for male X-chromosome genotypes
-      if not rsid in snps : return False
-      snpdb_snp = snps[rsid]
-      if snpdb_snp[1] == 'p' :
-        orientation = +1
-      elif snpdb_snp[1] == 'm' :
-        orientation = -1
-      else:
-        orientation = 0
-      req = rs1.group(2)
-      print 'compare', rsid, genome_snp[0], req, orientation
-      print '->', match_single(genome_snp[0][0], req, orientation) != 0 or match_single(genome_snp[0][1], req, orientation) != 0
-      return match_single(genome_snp[0][0], req, orientation) != 0 or match_single(genome_snp[0][1], req, orientation) != 0
-    rs2 = re.match('rs([0-9]*)\(([A-Z,-]*);([A-Z,-]*)\)', parsed)
-    if rs2 != None :
-      rsid = 'rs' + rs2.group(1)
-      if not rsid in genome : return False
-      genome_snp = genome[rsid]
-      if len(genome_snp[0]) == 1 : genome_snp[0] = genome_snp[0] + ' ' # can occur for male X-chromosome genotypes
-      if not rsid in snps : return False
-      snpdb_snp = snps[rsid]
-      if snpdb_snp[1] == 'p' :
-        orientation = +1
-      elif snpdb_snp[1] == 'm' :
-        orientation = -1
-      else:
-        orientation = 0
-      req = rs2.group(2) + rs2.group(3)
-      print 'compare', genome_snp[0], req, orientation
-      print '->', match_genotypes(genome_snp[0], req, orientation)
-      return match_genotypes(genome_snp[0], req, orientation)
-    gs  = re.match('gs([0-9]*)', parsed)
-    if gs != None : 
-      if not parsed in genosets : return False
-      return interpret_genoset_criteria(genosets[parsed][3], genosets, snps, genome)
-    print 'ERROR : unsupported string pattern %s in genoset evaluation' % parsed
-  # now recursive case
-  if len(parsed) != 2 :
-    print 'ERROR : parsed criteria %s do not have 2 items (function and argument list) as expected' % str(parsed)
-    return None
-  if parsed[0] == 'atleast' :
-    if not parsed[1][0].isdigit :
-      print 'ERROR : atleast arguments do not start with a number as expected, got %2' % parsed[1][0]
+class Genome :
+  def __init__(self, filename, data = None) :
+    self.data = data if data != None else Data()
+    self.genotypes = {}
+    gen_file = open(filename, 'r')
+    for line in gen_file :
+      tokens = line.split()
+      if len(tokens) == 0 or tokens[0] == '#' : continue
+      if len(tokens) != 4 :
+        print '*** ERROR : invalid line "%s" while reading in genome' % line
+        continue
+      # 23andme format:
+      # rsid  chromosome      position        genotype
+      # rs4477212       1       82154   AA
+      # orientation = plus since 23andm3 always reports it so; ignore position which is incompatible with SNPedia info
+      self.genotypes[tokens[0]] = Genotype(snp_name=tokens[0], genotype=tokens[3], chromosome=tokens[1], position=None, orientation='plus')
+      if self.data.config.verbose and len(self.genotypes) % 100000 == 0 : 
+        print 'INFO : loaded genome entry %d, %s' % (len(self.genotypes), tokens[0])
+  
+  def genotype(self, genotype_name) :
+    try :
+      return self.genotypes[genotype_name]
+    except KeyError :
       return None
-    minval = int(parsed[1][0])
-    results = [ evaluate_parsed_criteria(item, genosets, snps, genome) for item in parsed[1][1:] ]
-    print results
-    print '->', sum(1 for item in results if item), '>=?', minval, '==>', (sum(1 for item in results if item) >= minval)
-    return (sum(1 for item in results if item) >= minval)
-  results = [ evaluate_parsed_criteria(item, genosets, snps, genome) for item in parsed[1] ] 
-  print 'EVP : results = ', results, "'" + parsed[0] + "'"
-  if parsed[0] == 'and' : print '->', all(results)
-  if parsed[0] == 'or'  : print '->', any(results)
-  if parsed[0] == 'and' : return all(results)
-  if parsed[0] == 'or'  : return any(results)
-  if parsed[0] == 'not' :
-    if len(results) != 1 :
-      print 'ERROR : passing %d arguments to "not" in %s, should be one' % (len(parsed[1]), str(parsed))
-      return None
-    print '->', not results[0]
-    return not results[0]
-  print 'ERROR : unknown operator %s' % parsed[0]
-  return None
+  
+  def find_snps(self) :
+    results = []
+    for snp_name in self.data.snps() :
+      print 'xxx Testing', snp_name
+      if not snp_name in self.genotypes : continue
+      genotype = self.genotypes[snp_name]
+      snp = self.data.snp(snp_name)
+      matches = snp.match(genotype)
+      print 'xxx Test Results', ','.join(m.genotype for m in matches)
+      if len(matches) == 0 : continue
+      if len(matches) > 1 : 
+        print 'WARNING : genotype %s of snp %s has multiple matches:' % (genotype.genotype, snp.name), ', '.join(g.genotype for g in matches)
+        continue
+      results.append(Match(genotype, snp, matches[0]))
+    return results
+
+  def find_genosets(self) :
+    results = []
+    for genoset_name in self.data.genosets() :
+      print 'Genoset ' + genoset_name
+      genoset = self.data.genoset(genoset_name)
+      if genoset.match_genome(self) :
+        print '==> passed', genoset_name
+        results.append(genoset)
+    return results
 
 
-def make_snp_db_output(snp_db_file, output, verbose = False, mode = 'w') :
-  db = shelve.open(snp_db_file, 'r')
-  outfile = open(output, mode)
-  outfile.write(css_style)
-  #rs11155133 ['6', 'p', 'LOC102723724', '140848688', '38.1', '141', [('AA', ['0', 'common in complete genomics', 'g'])]]
-  outfile.write('<h1> SNP Database </h1> <table>\n')
-  if verbose :
-    outfile.write('<tr><td> SNP </td> <td> Chromosome </td> <td> Orientation </td>  <td> Gene </td> <td> Location </td> <td> Genome Build </td>  <td> dbSNP Build </td> <td> Genotype </td> <td> Significance </td>  <td> Description </td></tr>\n')
-  else:
-    outfile.write('<tr><td> SNP </td> <td> Chromosome </td>  <td> Gene </td> <td> Genotype </td> <td> Significance </td>  <td> Description </td>\n')
-  for snpid in db :
-    results = db[snpid]
-    td = '<td rowspan="%d">' % len(results[6])
-    if verbose :
-      outfile.write('<tr>%s %s </td> %s %s </td>  %s %s </td> %s %s </td> %s %s </td>  %s %s </td> %s %s </td>' % 
-                    (td, snpid, td, results[0], td, results[1], td, results[2], td, results[3], td, results[4], td, results[5]))
-    else:
-      outfile.write('<tr> %s %s </td> %s %s </td>  %s %s </td>' % 
-                    (td, snpid, td, results[0], td, results[2]))
-    for gt in results[6] :
+class Genotype :
+  def __init__(self, snp_name, genotype, chromosome, position, orientation = 'plus') :
+    self.snp_name = snp_name
+    self.chromosome = chromosome
+    self.position = position
+    self.orientation = orientation
+    self.genotype = genotype
+
+  def alleles(self) :
+    return Allele.split(self.genotype, self.orientation)
+
+
+class Match :
+  def __init__(self, genotype, snp, match) :
+    self.genotype = genotype
+    self.snp = snp
+    self.snp_geno_match = match
+
+
+class HtmlOutput :
+  def __init__(self, config = None) :
+    self.config = config if config != None else Config()
+    
+  def snp_page(self, snp_results, output, mag_cutoff = 2, mode = 'w') :
+    print snp_results
+    sorted_results = sorted(snp_results, key=lambda result: result.snp_geno_match.magnitude, reverse=True)
+    outfile = open(output, mode)
+    outfile.write(self.config.css_style)
+    outfile.write('<h1> SNP Results </h1> <table>\n')
+    outfile.write('<tr><td> SNP ID </td><td> Chr. </td><td> Gene </td><td> Individual Genotype </td><td> Matched Genotype </td><td> Significance </td><td> Description </td>\n')
+    for result in sorted_results :
+      if result.snp_geno_match.magnitude < mag_cutoff : break # list is sorted
+      outfile.write('  <tr><td> %s </td><td> %s </td><td> %s </td> <td> %s </td>  <td> %s </td> ' 
+                    % (result.snp.name, result.snp.chromosome, result.snp.gene, result.genotype.genotype, result.snp_geno_match.genotype))
       mag_style = ''
-      if gt[1][2] == 'g' : mag_style = ' bgcolor="#00FF00"'
-      elif gt[1][2] == 'b' : mag_style = ' bgcolor="#FF0000"'
-      outfile.write('<td> %s </td> <td%s> %s </td>  <td> %s </td></tr>\n' % (gt[0], mag_style, gt[1][0], gt[1][1]))
-  outfile.write('</table>\n')
+      if result.snp_geno_match.repute == 'good' : mag_style = '  bgcolor="#00FF00"'
+      elif result.snp_geno_match.repute == 'bad' : mag_style = '  bgcolor="#FF0000"'
+      outfile.write('<td%s> %s </td> <td> %s </td>' % (mag_style, result.snp_geno_match.magnitude, result.snp_geno_match.summary))
+      outfile.write('<tr>\n')
+    outfile.write('</table>\n')
 
+  def genoset_page(self, genoset_results, output, mag_cutoff = 2, mode = 'w') :
+    sorted_results = sorted(genoset_results, key=lambda gs: gs.magnitude, reverse=True)
+    outfile = open(output, mode)
+    outfile.write(self.config.css_style)
+    outfile.write('<h1> Genoset Results </h1> <table>\n')
+    outfile.write('  <tr><td> Genoset ID </td><td> Significance </td><td> Description </td>\n')
+    for gs in sorted_results :
+      if gs.magnitude < mag_cutoff : break # list is sorted
+      outfile.write('  <tr><td> %s </td>' % gs.name)
+      mag_style = ''
+      #if results[4] == 'g' : mag_style = ' style="background-color:green'
+      #elif results[4] == 'b' : mag_style = ' style="background-color:red'
+      if gs.repute == 'good' : mag_style = '  bgcolor="#00FF00"'
+      elif gs.repute == 'bad' : mag_style = '  bgcolor="#FF0000"'
+      outfile.write('<td%s> %s </td> <td> %s </td>' % (mag_style, gs.magnitude, gs.summary))  # magnitude and summary
+      outfile.write('<tr>\n')
+    outfile.write('</table>\n')
 
-def make_genoset_db_output(genoset_db_file, output, mode = 'w') :
-  db = shelve.open(genoset_db_file, 'r')
-  outfile = open(output, mode)
-  outfile.write(css_style)
-  #gs269 ['2', 'APOE E2/E3', 'g', 'and(rs429358(T;T),rs7412(C;T))']
-  outfile.write('<h1> Genoset Database </h1> <table>\n')
-  outfile.write('<tr><td> Genoset </td> <td> Significance </td> <td> Description </td> <td> Criteria </td></tr>\n')
-  for geno in db :
-    results = db[geno]
-    mag_style = ''
-    if results[2] == 'g' : mag_style = ' bgcolor="#00FF00"'
-    elif results[2] == 'b' : mag_style = ' bgcolor="#FF0000"'
-    outfile.write('<td> %s </td> <td%s> %s </td>  <td> %s </td><td> %s </td></tr>\n' % (geno, mag_style, results[0], results[1], results[3]))
-  outfile.write('</table>\n')
+  def snp_db_page(self, data, output, verbose = False, mode = 'w') :
+    outfile = open(output, mode)
+    outfile.write(css_style)
+    #rs11155133 ['6', 'p', 'LOC102723724', '140848688', '38.1', '141', [('AA', ['0', 'common in complete genomics', 'g'])]]
+    outfile.write('<h1> SNP Database </h1> <table>\n')
+    if verbose :
+      outfile.write('<tr><td> SNP </td> <td> Chromosome </td> <td> Orientation </td>  <td> Gene </td> <td> Location </td> <td> Genome Build </td>  <td> dbSNP Build </td> <td> Genotype </td> <td> Significance </td>  <td> Description </td></tr>\n')
+    else:
+      outfile.write('<tr><td> SNP </td> <td> Chromosome </td>  <td> Gene </td> <td> Genotype </td> <td> Significance </td>  <td> Description </td>\n')
+    for snp_name in data.snps :
+      snp = data.snps[snp_name]
+      td = '<td rowspan="%d">' % len(snp.genotypes)
+      if verbose :
+        outfile.write('<tr>%s %s </td> %s %s </td>  %s %s </td> %s %s </td> %s %s </td>  %s %s </td> %s %s </td>' % 
+                      (td, snp_name, td, snp.chromosome, td, snp.stabilized_orientation, td, snp.gene, td, snp.location, 
+                       td, snp.genome_build, td, snp.dbSNP_build))
+      else:
+        outfile.write('<tr> %s %s </td> %s %s </td>  %s %s </td>' % 
+                      (td, snp_name, td, snp.chromosome, td, snp.gene))
+      for gt in snp.genotypes :
+        mag_style = ''
+        if gt.repute == 'g' : mag_style = ' bgcolor="#00FF00"'
+        elif gt.repute == 'b' : mag_style = ' bgcolor="#FF0000"'
+        outfile.write('<td> %s </td> <td%s> %s </td>  <td> %s </td></tr>\n' % (gt.name, mag_style, gt.magnitude, gt.summary))
+    outfile.write('</table>\n')
+
+  def genoset_db_page(self, data, genoset_db_file, output, mode = 'w') :
+    outfile = open(output, mode)
+    outfile.write(css_style)
+    outfile.write('<h1> Genoset Database </h1> <table>\n')
+    outfile.write('<tr><td> Genoset </td> <td> Significance </td> <td> Description </td> <td> Criteria </td></tr>\n')
+    for genoset_name in data.genosets :
+      genoset = data.genosets[genoset_name]
+      mag_style = ''
+      if genoset.repute == 'good' : mag_style = ' bgcolor="#00FF00"'
+      elif genoset.repute == 'bad' : mag_style = ' bgcolor="#FF0000"'
+      outfile.write('<td> %s </td> <td%s> %s </td>  <td> %s </td><td> %s </td></tr>\n' % 
+                    (genoset_name, mag_style, genoset.magnitude, genoset.summary, genoset.criteria))
+    outfile.write('</table>\n')
+
+  #def download_snp_chunk(i) :
+    #output = self.config.tmp_snp_db_fileroot + '_%d.db' % i
+    #first  = self.chunk_size*i
+    #last   = self.chunk_size*(i+1)
+    #if os.path.exists(output) :
+      #print 'ERROR : DB file %s already exists, will not overwrite. Exiting now' % output
+      #return False
+    #print 'INFO : writing to DB file ' + output
+    #start_time = time.time()
+    #shelf = shelve.open(output)
+    #snps = load_list(self.config.snp_list_file)
+    #genotypes = load_list(self.config.genotype_list_file)
+    #geno_dict = { geno : True for geno in genotypes }
+    #entry = -1
+    #processed = 0
+    #for line in snps :
+      #entry = entry + 1
+      #if num < first or num >= last : continue
+      #name = line.rstrip('\n')
+      #snp = download_snp(name, geno_dict)
+    #if snp == None : 
+      #print 'ERROR downloading SNP ' + name + ', will now retry'
+      #snp = download_snp(name, geno_dict)
+      #if snp == None : 
+        #print '*** ERROR downloading SNP ' + name + ' a second time, moving on'
+        #continue
+    #print 'INFO : writing SNP %s, index %d (range %d to %d)' % (name, num, first, last)
+    #snp.write(shelf)
+    #processed = processed + 1
+    #if processed % 10 == 0 : 
+      #print 'INFO : syncing DB file ' + output
+      #shelf.sync()
+    #print 'INFO : processed %d entries in %.1f seconds' % (processed, time.time() - start_time)
+    #print 'INFO : closing DB file ' + output
+    #shelf.close()

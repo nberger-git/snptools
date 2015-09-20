@@ -1,17 +1,16 @@
 #! /usr/bin/env ipython
 
-# Usage ./interpret.py genome data/snps.db data/genosets.db output.html
+# Usage ./interpret.py genome.txt output.html
 
 import sys
-import snptools
-results_snps = snptools.interpret_snps(sys.argv[1], sys.argv[2])
-snptools.make_snp_output(results_snps, sys.argv[2], sys.argv[4], 2)
+from snptools import Genome, HtmlOutput
+genome = Genome(sys.argv[1])
 
-#for r in results_snps : print r, results_snps[r]
-#print len(results_snps)
+#results_snps = genome.find_snps()
+#HtmlOutput().snp_page(results_snps, sys.argv[2], 2)
 
-results_sets = snptools.interpret_genosets(sys.argv[1], sys.argv[3], sys.argv[2])
-snptools.make_genoset_output(results_sets, sys.argv[4], 2, 'a')
+results_sets = genome.find_genosets()
+HtmlOutput().genoset_page(results_sets, sys.argv[2], 2)
 
 #print results_sets
 #for r in results_sets : print r, results_sets[r]
