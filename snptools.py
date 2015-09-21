@@ -1,4 +1,4 @@
-from wikitools import wiki, category, page
+from wikitools import wiki, category, page, NoPage
 import mwparserfromhell
 import re
 import shelve
@@ -71,7 +71,7 @@ class Data :
       infile = open(filename, 'r')
     except IOError as error :
       print error
-      return None;
+      return None
     output = []
     for name in infile : output.append(name.rstrip('\n'))
     return output
@@ -96,7 +96,7 @@ class Data :
 
 
 class WikiDownloader :
-  def __init__(self, config) :
+  def __init__(self, config = None) :
     self.config = config if config != None else Config()
     self.site = wiki.Wiki(self.config.site)
 
@@ -107,38 +107,44 @@ class WikiDownloader :
       items.append(article.title.lower())
       if len(items) % 1000 == 0 : print 'Downloading item %5d : %20s' % (len(items), items[-1])
 
-  def get_text(name) :
+  def get_text(self, name) :
     try:
-      pagehandle = page.Page(self.site, name)
+      capname = name[0].upper() + name[1:]
+      pagehandle = page.Page(self.site, capname, False, False)
       return pagehandle.getWikiText()
-    except:
-      print 'ERROR : could not download page %s'
+      #try:
+        #return pagehandle.getWikiText(getrequest=True)
+      #except :
+        ## For unpatched wikitools versions
+        #return pagehandle.getWikiText()
+    except NoPage :
+      print 'ERROR : page %s is not found!' % capname
       return None
 
-  def get_templates(name) :
+  def get_templates(self, name) :
     text = self.get_text(name)
     if not text : return []
     wikicode = mwparserfromhell.parse(text)
     return wikicode.filter_templates()
 
-  def get_val(templates, template_name, key, warn = True) :
+  def get_val(self, templates, template_name, key, warn = True) :
     for t in templates :
       if t.name != template_name : continue
       try:
         return str(t.get(key).value).rstrip('\n')
       except:
-        if warn : print 'WARNING : could not get attribute %s from template %s' % (template_name, key)
+        if warn : print 'WARNING : could not get attribute %s from template %s' % (key, template_name)
         return ''
     print 'WARNING : no template found with name %s' % template_name
     return ''
     
 
 class DataGetter :
-  def __init__(self, config) :
+  def __init__(self, config = None) :
     self.config = config if config != None else Config()
     self.wiki = WikiDownloader(config)
     
-  def download_category(catname, output_file, overwrite = False) :
+  def download_category(self, catname, output_file, overwrite = False) :
     if os.path.exists(output_file) :
       print 'INFO : output file %s already exists, skipping' % output_file
       return False
@@ -148,7 +154,7 @@ class DataGetter :
       outfile.write(item + '\n')
     outfile.close()
   
-  def download_snp(snp_name, geno_dict = {}) :
+  def download_snp(self, snp_name, geno_dict = {}) :
     snp = SNP(snp_name)
     templates = self.wiki.get_templates(snp_name)
     chromosome = self.wiki.get_val(templates, 'Rsnum\n', 'Chromosome')
@@ -158,36 +164,40 @@ class DataGetter :
     snp.position = int(position) if position.isdigit() else None
     snp.genome_build = self.wiki.get_val(templates, 'Rsnum\n', 'GenomeBuild')
     snp.dbSNP_build = self.wiki.get_val(templates, 'Rsnum\n', 'dbSNPBuild')
-    snp.orientation = self.wiki.get_val(tt[0], 'Orientation')
-    snp.stabilized_orientation = self.wiki.get_val(tt[0], 'StabilizedOrientation')
+    snp.orientation = self.wiki.get_val(templates, 'Rsnum\n', 'Orientation')
+    snp.stabilized_orientation = self.wiki.get_val(templates, 'Rsnum\n', 'StabilizedOrientation')
     snp.genotypes = {}
-    for i in range(1,3) :
+    for i in range(1,4) :
       val = self.wiki.get_val(templates, 'Rsnum\n', 'geno%d' % i, False) 
       if val != '' :
         genotype_name = snp_name + val
         if len(geno_dict) and not genotype_name.lower() in geno_dict :
           print '*** WARNING : genotype %s not in list, adding placeholder instead ' % genotype_name
-          genotype = SNPGenotype(snp_name, val)
+          genotype = SNPGenotype(snp, val)
         else :
-          genotype = download_genotype(snp_name, val)
+          genotype = self.download_genotype(snp, val)
         snp.genotypes[val] = genotype
+    popd = self.get_populations(templates)
+    for geno in popd :
+      if geno in snp.genotypes :
+        snp.genotypes[geno].frequency = popd[geno]
     if snp.genotypes == {} : return None # no genotypes => not interesting!
     return snp
 
-  def download_genotype(snp_name, genotype_name) :
-    genotype = SNPGenotype(snp_name, genotype_name)
+  def download_genotype(self, snp, genotype_name) :
+    genotype = SNPGenotype(snp, genotype_name)
     templates = self.wiki.get_templates(genotype.full_name())
-    genotype.magnitude = get_val(templates, 'Genotype\n', 'magnitude')
+    genotype.magnitude = self.wiki.get_val(templates, 'Genotype\n', 'magnitude')
     try :
       genotype.magnitude = float(genotype.magnitude)
     except :
       genotype.magnitude = None
-    genotype.summary   = get_val(templates, 'Genotype\n', 'summary')
+    genotype.summary   = self.wiki.get_val(templates, 'Genotype\n', 'summary')
     genotype.repute = self.wiki.get_val(templates, 'Genotype\n', 'repute').lower()
     if genotype.magnitude != 'good' and genotype.magnitude != 'bad' : genotype.magnitude = None
     return genotype
 
-  def download_genoset(genoset_name) :
+  def download_genoset(self, genoset_name) :
     genoset = SNPGenoset(genoset_name)
     templates = self.wiki.get_templates(genoset_name)
     genoset.repute = self.wikiget_val(templates, 'Genoset', 'Repute').lower()
@@ -214,12 +224,29 @@ class DataGetter :
     genoset.criteria = append(criteria)
     return genoset
 
-  def download_lists(overwrite = False) :
+  def get_populations(self, templates) :
+    pops = []
+    for t in templates :
+      if t.name != ' population diversity\n' : continue
+      for line in t.split('\n') :
+        tokens = [ s.strip(' ') for s in line.split('|') ]
+        if tokens[1] != 'CEU' : continue
+        pops = tokens[2:]
+        break
+    popd = {}
+    try :
+      for i, pop in enumerate(pops) :
+        popd[t.get('geno%d' % (i+1)).value.rstrip('\n')] = float(p)
+    except:
+      print 'ERROR : could not retrieve population diversity values'
+    return popd
+
+  def download_lists(self, overwrite = False) :
     self.download_category('Is_a_snp',      self.config.snp_list_file)
     self.download_category('Is_a_genotype', self.config.genotype_list_file)
     self.download_category('Is_a_genoset',  self.config.genoset_list_file)
     
-  def download_genosets() :
+  def download_genosets(self) :
     start_time = time.time()
     genosets = self.load_list(self.config.genoset_list_file, True)
     if os.path.exists(self.config.genoset_db_file) :
@@ -284,6 +311,7 @@ class Allele :
     if l % 2 == 0 : return [Allele(genotype[0:l/2], orientation), Allele(genotype[l/2:], orientation) ] # ACGACG
     return None
 
+
 class SNP :
   def __init__(self, name) :
     self.name = name
@@ -294,6 +322,7 @@ class SNP :
     self.dbSNP_build = None
     self.orientation = None
     self.stabilized_orientation = None
+    self.frequency = None
     self.genotypes = {}
     
   def match(self, genotype) :
@@ -355,14 +384,21 @@ class SNP :
       
 class SNPGenotype() :
   def __init__(self, snp, genotype) :
-    self.genotype = genotype
+    if type(genotype) == list :
+      self.alleles = genotype
+    else :
+      self.alleles = self.parse_alleles(genotype)
     self.snp = snp
         
+  def parse_alleles(self, raw_genotype) :
+    match = re.match('\((([A-Z]|-)*)(;(([A-Z]|-)*))?\)', raw_genotype)
+    retrun [ match.group(1) ].append(match.group(6) if match.group(6) else [])
+
   def full_name(self) : 
     return self.snp.name + self.genotype
 
   def alleles(self) :
-    return Allele.split(self.genotype, self.snp.orientation)
+    return [ Allele(a, snp.orientation) for a in self.alleles ]
 
   def match(self, genotype) :
     ref_alleles = self.alleles()
@@ -415,6 +451,7 @@ class SNPGenotype() :
       error.message = error.message + '\nERROR : could not deserialize genotype record %s' % record
       raise
     return self
+
 
 class SNPGenoset() :
   def __init__(self, name = None, criteria = None, parsed = None, data = None) :
