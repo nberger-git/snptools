@@ -7,6 +7,7 @@ import os
 import sys
 import ConfigParser
 
+
 config_locations = [ os.path.join(loc, 'snptools.conf') for loc in [ os.curdir, os.path.expanduser("~/.snptools") ] ]
 
 
@@ -24,17 +25,13 @@ class Config :
       self.genoset_list_file = os.path.expanduser(config.get('genosets', 'list_file'))
       self.genoset_db_file = os.path.expanduser(config.get('genosets', 'db_file'))
       self.site = config.get('wiki', 'site')
+      self.use_get_requests = config.get('wiki', 'use_get_requests') in ['True', 'true', 'yes', '1' ]
       self.css_style = config.get('html', 'css_style')
       self.verbose = config.get('output', 'verbose')
     except (ConfigParser.NoOptionError, ConfigParser.NoSectionError) as error :
       error.message = error.message + '\nERROR : cannot read config file %s, exiting' % found[0]
       raise
     message = '%s file %s is not found, please run the data fetching utility first'
-    if not os.path.exists(self.snp_db_file)        : raise IOError, message % ('SNP database',     self.snp_db_file)
-    if not os.path.exists(self.snp_list_file)      : raise IOError, message % ('SNP list',         self.snp_list_file)
-    if not os.path.exists(self.genotype_list_file) : raise IOError, message % ('Genotype list',    self.genotype_list_file)
-    if not os.path.exists(self.genoset_list_file)  : raise IOError, message % ('Genoset list',     self.genoset_list_file)
-    if not os.path.exists(self.genoset_db_file)    : raise IOError, message % ('Genoset database', self.genoset_db_file)
 
 
 class Data :
@@ -47,10 +44,12 @@ class Data :
     self.l_genoset_list = None
 
   def snps(self) :
+    if not os.path.exists(self.config.snp_db_file) : raise IOError, message % ('SNP database', self.config.snp_db_file)
     if self.l_snps == None : self.l_snps = shelve.open(self.config.snp_db_file, 'r')
     return self.l_snps
   
   def genosets(self) :
+    if not os.path.exists(self.config.genoset_db_file) : raise IOError, message % ('Genoset database', self.config.genoset_db_file)
     if self.l_genosets == None : self.l_genosets = shelve.open(self.config.genoset_db_file, 'r')
     return self.l_genosets
 
@@ -77,14 +76,17 @@ class Data :
     return output
     
   def snp_list(self) :
+    if not os.path.exists(self.config.snp_list_file) : raise IOError, message % ('SNP list', self.config.snp_list_file)
     if self.l_snp_list == None : self.l_snp_list = self.load_list(self.config.snp_list_file)
     return self.l_snp_list
 
   def genotype_list(self) :
+    if not os.path.exists(self.config.genotype_list_file) : raise IOError, message % ('Genotype list', self.config.genotype_list_file)
     if self.l_genotype_list == None : self.l_genotype_list = self.load_list(self.config.genotype_list_file)
     return self.l_genotype_list
 
   def genoset_list(self) :
+    if not os.path.exists(self.config.genoset_list_file) : raise IOError, message % ('Genoset list', self.config.genoset_list_file)
     if self.l_genoset_list == None : self.l_genoset_list = self.load_list(self.config.genoset_list_file)
     return self.l_genoset_list
 
@@ -95,28 +97,29 @@ class Data :
       print key, db[key]
 
 
-class WikiDownloader :
+class Wiki :
   def __init__(self, config = None) :
     self.config = config if config != None else Config()
+    print 'INFO: opening wiki site %s' % self.config.site
     self.site = wiki.Wiki(self.config.site)
 
   def get_category(self, catname) :
     cat = category.Category(self.site, catname)
     items = []
-    for article in snps.getAllMembersGen(namespaces=[0]) :
+    for article in cat.getAllMembersGen(namespaces=[0]) :
       items.append(article.title.lower())
       if len(items) % 1000 == 0 : print 'Downloading item %5d : %20s' % (len(items), items[-1])
-
+    return items
+  
   def get_text(self, name) :
     try:
       capname = name[0].upper() + name[1:]
       pagehandle = page.Page(self.site, capname, False, False)
-      return pagehandle.getWikiText()
-      #try:
-        #return pagehandle.getWikiText(getrequest=True)
-      #except :
-        ## For unpatched wikitools versions
-        #return pagehandle.getWikiText()
+      try:
+        return pagehandle.getWikiText(getrequest=self.config.use_get_requests)
+      except :
+        # For unpatched wikitools versions
+        return pagehandle.getWikiText()
     except NoPage :
       print 'ERROR : page %s is not found!' % capname
       return None
@@ -127,49 +130,68 @@ class WikiDownloader :
     wikicode = mwparserfromhell.parse(text)
     return wikicode.filter_templates()
 
-  def get_val(self, templates, template_name, key, warn = True) :
+  def get_template(self, templates, template_name) :
     for t in templates :
-      if t.name != template_name : continue
-      try:
-        return str(t.get(key).value).rstrip('\n')
-      except:
-        if warn : print 'WARNING : could not get attribute %s from template %s' % (key, template_name)
-        return ''
-    print 'WARNING : no template found with name %s' % template_name
-    return ''
-    
+      if t.name == template_name : return t
+    return None
+  
+  def get_val(self, templates, template_name, key, warn = True) :
+    t = self.get_template(templates, template_name)
+    if t == None :
+      print 'WARNING : no template found with name %s' % template_name
+      return None
+    try :
+      return str(t.get(key).value).rstrip('\n')
+    except:
+      if warn : print 'WARNING : could not get attribute %s from template %s' % (key, template_name)
+      return None
+  
 
-class DataGetter :
+class Downloader :
   def __init__(self, config = None) :
     self.config = config if config != None else Config()
-    self.wiki = WikiDownloader(config)
+    self.wiki = Wiki(config)
+    self.data = Data()
     
   def download_category(self, catname, output_file, overwrite = False) :
     if os.path.exists(output_file) :
       print 'INFO : output file %s already exists, skipping' % output_file
-      return False
+      return True
     print 'INFO : downloading category %s to file %s.' % (catname, output_file)
+    results = [ item for item in self.wiki.get_category(catname) ]
+    if os.path.exists(output_file) :
+      print 'INFO : output file %s was created while data was retrieved, skipping' % output_file
+      return True
     outfile = open(output_file, 'w')
-    for item in self.wiki.get_category(catname) :
-      outfile.write(item + '\n')
+    for item in results : outfile.write(item + '\n')
     outfile.close()
+    return True
   
   def download_snp(self, snp_name, geno_dict = {}) :
     snp = SNP(snp_name)
     templates = self.wiki.get_templates(snp_name)
-    chromosome = self.wiki.get_val(templates, 'Rsnum\n', 'Chromosome')
-    snp.chromosome = int(chromosome) if chromosome.isdigit() else None
-    snp.gene = self.wiki.get_val(templates, 'Rsnum\n', 'Gene')
-    position = self.wiki.get_val(templates, 'Rsnum\n', 'position')
-    snp.position = int(position) if position.isdigit() else None
-    snp.genome_build = self.wiki.get_val(templates, 'Rsnum\n', 'GenomeBuild')
-    snp.dbSNP_build = self.wiki.get_val(templates, 'Rsnum\n', 'dbSNPBuild')
-    snp.orientation = self.wiki.get_val(templates, 'Rsnum\n', 'Orientation')
-    snp.stabilized_orientation = self.wiki.get_val(templates, 'Rsnum\n', 'StabilizedOrientation')
+    if self.wiki.get_template(templates, 'Rsnum\n') :
+      snp.chromosome = self.wiki.get_val(templates, 'Rsnum\n', 'Chromosome')
+      snp.gene = self.wiki.get_val(templates, 'Rsnum\n', 'Gene')
+      position = self.wiki.get_val(templates, 'Rsnum\n', 'position')
+      snp.position = int(position) if position and position.isdigit() else None
+      snp.genome_build = self.wiki.get_val(templates, 'Rsnum\n', 'GenomeBuild')
+      snp.dbSNP_build = self.wiki.get_val(templates, 'Rsnum\n', 'dbSNPBuild')
+      snp.orientation = self.wiki.get_val(templates, 'Rsnum\n', 'Orientation')
+      snp.stabilized_orientation = self.wiki.get_val(templates, 'Rsnum\n', 'StabilizedOrientation')
+    elif self.wiki.get_template(templates, '23andMe SNP\n') :
+      snp.chromosome = self.wiki.get_val(templates, '23andMe SNP\n', 'Chromosome')
+      snp.gene = self.wiki.get_val(templates, '23andMe SNP\n', 'Gene')
+      position = self.wiki.get_val(templates, '23andMe SNP\n', 'position')
+      snp.position = int(position) if position and position.isdigit() else None
+      snp.genome_build = self.wiki.get_val(templates, '23andMe SNP\n', 'GenomeBuild')
+      snp.dbSNP_build = None
+      snp.orientation = None
+      snp.stabilized_orientation = None
     snp.genotypes = {}
     for i in range(1,4) :
       val = self.wiki.get_val(templates, 'Rsnum\n', 'geno%d' % i, False) 
-      if val != '' :
+      if val :
         genotype_name = snp_name + val
         if len(geno_dict) and not genotype_name.lower() in geno_dict :
           print '*** WARNING : genotype %s not in list, adding placeholder instead ' % genotype_name
@@ -181,7 +203,21 @@ class DataGetter :
     for geno in popd :
       if geno in snp.genotypes :
         snp.genotypes[geno].frequency = popd[geno]
-    if snp.genotypes == {} : return None # no genotypes => not interesting!
+    if snp.genotypes == {} and self.wiki.get_template(templates, 'hgsnp\n') :
+      anc_all = self.wiki.get_val(templates, 'hgsnp\n', 'ancestral_allele')
+      der_all = self.wiki.get_val(templates, 'hgsnp\n', 'derived_allele')
+      try :
+        summary = ','.join([ s.rstrip('\n') for s in self.wiki.get_template(templates, 'hgsnp\n').split("|")[1:7] ])
+      except:
+        summary = ''
+      if anc_all : 
+        anc_geno = SNPGenotype(snp, anc_all)
+        anc_geno.summary = summary
+        snp.genotypes[anc_all] = anc_geno
+      if der_all : 
+        der_geno = SNPGenotype(snp, der_all)
+        der_geno.summary = summary
+        snp.genotypes[der_all] = der_geno
     return snp
 
   def download_genotype(self, snp, genotype_name) :
@@ -240,40 +276,75 @@ class DataGetter :
     except:
       print 'ERROR : could not retrieve population diversity values'
     return popd
-
-  def download_lists(self, overwrite = False) :
-    self.download_category('Is_a_snp',      self.config.snp_list_file)
-    self.download_category('Is_a_genotype', self.config.genotype_list_file)
-    self.download_category('Is_a_genoset',  self.config.genoset_list_file)
     
+  def download_snps(self) :
+    start_time = time.time()
+    snps = self.data.snp_list()
+    genotypes = self.data.genotype_list()
+    geno_dict = { geno : True for geno in genotypes }
+    processed = 0
+    print 'INFO : writing to DB file ' + self.config.snp_db_file
+    shelf = shelve.open(self.config.snp_db_file)
+    interrupt = False
+    try :
+      for num, line in enumerate(snps) :
+        name = line.rstrip('\n')
+        if name in shelf : continue
+        print 'INFO : downloading %s' % name
+        snp = self.download_snp(name, geno_dict)
+        if snp == None : 
+          print 'ERROR downloading SNP ' + name + ', skipping for now'
+          continue
+        print 'INFO : writing SNP %s, index %d of %d' % (name, num, len(snps))
+        shelf[name] = snp.serialize()
+        processed = processed + 1
+    except KeyboardInterrupt :
+      print 'INFO: SNP download was interrupted cleanly'
+      interrupt = True
+    print 'INFO : processed %d entries in %.1f seconds' % (processed, time.time() - start_time)
+    print 'INFO : closing DB file ' + self.config.snp_db_file
+    shelf.close()
+    return not interrupt
+
   def download_genosets(self) :
     start_time = time.time()
-    genosets = self.load_list(self.config.genoset_list_file, True)
-    if os.path.exists(self.config.genoset_db_file) :
-      print 'ERROR : DB file %s already exists, will not overwrite. Exiting now' % self.config.genoset_db_file
-      return
-    print 'INFO : writing to DB file ' + self.config.genoset_db_file
-    num = -1
+    genosets = self.data.genoset_list()
     processed = 0
+    print 'INFO : writing to DB file ' + self.config.genoset_db_file
     shelf = shelve.open(self.config.genoset_db_file)
-    for line in genosets :
-      num = num + 1
-      name = line.rstrip('\n')
-      genoset = download_genoset(name)
-      if genoset == None : 
-        print '*** ERROR downloading genoset ' + name + ', skipping'
-      elif genoset != [] : 
-        print 'INFO : writing genoset %s, index %d' % (name, num)
-        shelf[name] = genoset
+    interrupt = False
+    try :
+      for num, line in enumerate(genosets) :
+        name = line.rstrip('\n')
+        if name in shelf : continue
+        print 'INFO : downloading %s' % name
+        genoset = self.download_genoset(name)
+        if genoset == None : 
+          print 'ERROR downloading genoset ' + name + ', skipping for now'
+          continue
+        print 'INFO : writing genoset %s, index %d of %d' % (name, num, len(genosets))
+        shelf[name] = genoset.serialize()
         processed = processed + 1
-      if processed % 10 == 0 : 
-        print 'INFO : syncing DB file ' + output
-        shelf.sync()
+    except KeyboardInterrupt :
+      print 'INFO: genoset download was interrupted cleanly'
+      interrupt = True
     print 'INFO : processed %d entries in %.1f seconds' % (processed, time.time() - start_time)
-    print 'INFO : closing DB file ' + output
+    print 'INFO : closing DB file ' + self.config.genoset_db_file
     shelf.close()
+    return not interrupt
 
-
+  def download(self) :
+    try :
+      if self.download_category('Is_a_snp',      self.config.snp_list_file) and \
+         self.download_category('Is_a_genotype', self.config.genotype_list_file) and \
+         self.download_category('Is_a_genoset',  self.config.genoset_list_file) and \
+         self.download_snps() and \
+         self.download_genosets() : return True
+    except KeyboardInterrupt :
+      pass
+    print 'INFO : download process was interrupted cleanly, leaving now'
+    
+      
 class Allele :
   def __init__(self, allele, orientation) :
     self.orientation = orientation if orientation == 'plus' or orientation == 'minus' else None
@@ -337,8 +408,8 @@ class SNP :
     record = [ self.chromosome, self.gene, self.position, self.genome_build, self.dbSNP_build ]
     ori = '-'
     sor = '-'
-    if len(self.orientation) > 0 : ori = self.orientation[0]
-    if len(self.stabilized_orientation) > 0 : sor = self.stabilized_orientation[0]
+    if self.orientation and len(self.orientation) > 0 : ori = self.orientation[0]
+    if self.stabilized_orientation and len(self.stabilized_orientation) > 0 : sor = self.stabilized_orientation[0]
     record.append(ori + sor)
     genotype_records = {}
     for geno in self.genotypes :
@@ -389,10 +460,18 @@ class SNPGenotype() :
     else :
       self.alleles = self.parse_alleles(genotype)
     self.snp = snp
+    self.magnitude = None
+    self.summary = None
+    self.repute = None
         
   def parse_alleles(self, raw_genotype) :
     match = re.match('\((([A-Z]|-)*)(;(([A-Z]|-)*))?\)', raw_genotype)
-    retrun [ match.group(1) ].append(match.group(6) if match.group(6) else [])
+    if match : return [ match.group(1) ].append(match.group(6) if match.group(6) else [])
+    match = re.match('^([A-Z]|-)([A-Z]|-)$', raw_genotype)
+    if match : return [ match.group(0), match.group(1) ]
+    match = re.match('^([A-Z]|-)$', raw_genotype)
+    if match : return [ match.group(0) ]
+    return None
 
   def full_name(self) : 
     return self.snp.name + self.genotype
@@ -422,7 +501,7 @@ class SNPGenotype() :
 
   def serialize(self) :
     if self.repute == 'good' : rep = True 
-    elif repute == 'bad' : rep = False
+    elif self.repute == 'bad' : rep = False
     else : rep = None
     return [ self.magnitude, rep, self.summary ]
   
@@ -729,39 +808,3 @@ class HtmlOutput :
       outfile.write('<td> %s </td> <td%s> %s </td>  <td> %s </td><td> %s </td></tr>\n' % 
                     (genoset_name, mag_style, genoset.magnitude, genoset.summary, genoset.criteria))
     outfile.write('</table>\n')
-
-  #def download_snp_chunk(i) :
-    #output = self.config.tmp_snp_db_fileroot + '_%d.db' % i
-    #first  = self.chunk_size*i
-    #last   = self.chunk_size*(i+1)
-    #if os.path.exists(output) :
-      #print 'ERROR : DB file %s already exists, will not overwrite. Exiting now' % output
-      #return False
-    #print 'INFO : writing to DB file ' + output
-    #start_time = time.time()
-    #shelf = shelve.open(output)
-    #snps = load_list(self.config.snp_list_file)
-    #genotypes = load_list(self.config.genotype_list_file)
-    #geno_dict = { geno : True for geno in genotypes }
-    #entry = -1
-    #processed = 0
-    #for line in snps :
-      #entry = entry + 1
-      #if num < first or num >= last : continue
-      #name = line.rstrip('\n')
-      #snp = download_snp(name, geno_dict)
-    #if snp == None : 
-      #print 'ERROR downloading SNP ' + name + ', will now retry'
-      #snp = download_snp(name, geno_dict)
-      #if snp == None : 
-        #print '*** ERROR downloading SNP ' + name + ' a second time, moving on'
-        #continue
-    #print 'INFO : writing SNP %s, index %d (range %d to %d)' % (name, num, first, last)
-    #snp.write(shelf)
-    #processed = processed + 1
-    #if processed % 10 == 0 : 
-      #print 'INFO : syncing DB file ' + output
-      #shelf.sync()
-    #print 'INFO : processed %d entries in %.1f seconds' % (processed, time.time() - start_time)
-    #print 'INFO : closing DB file ' + output
-    #shelf.close()
