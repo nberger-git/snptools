@@ -6,7 +6,7 @@ from snptools import Config
 if sys.argv[1] == 'snp' :
   filename = Config().snp_db_file
 elif sys.argv[1] == 'genoset' :
-  filename = Config().snp_genoset_file
+  filename = Config().genoset_db_file
 else :
   print "Usage : delete.py [snp|genoset] name"
   sys.exit(0)

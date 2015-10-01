@@ -113,24 +113,36 @@ class Wiki :
   
   def get_text(self, name) :
     try:
-      capname = name[0].upper() + name[1:]
-      pagehandle = page.Page(self.site, capname, False, False)
       try:
-        return pagehandle.getWikiText(getrequest=self.config.use_get_requests)
-      except :
-        # For unpatched wikitools versions
-        return pagehandle.getWikiText()
-    except NoPage :
-      print 'ERROR : page %s is not found!' % capname
+        normalized_name = (name[0].upper() + name[1:]).replace(' ', '_')
+        # very special cases
+        if name[0] != 'i' and name[0:2] != 'rs' and name[0:2] != 'gs' :
+          splits = name.split(' ')
+          splits[0] = splits[0].upper()
+          normalized_name = '_'.join(splits)
+        print 'Using normalized name %s' % normalized_name      
+        pagehandle = page.Page(self.site, normalized_name, False, False)
+        try:
+          return pagehandle.getWikiText(getrequest=self.config.use_get_requests)
+        except :
+          # For unpatched wikitools versions
+          return pagehandle.getWikiText()
+      except NoPage :
+        print 'ERROR : page %s is not found!' % normalized_name
+        return None
+    except Exception as error :
+      print 'ERROR : wikitools exception while getting page %s!' % normalized_name
+      print error.message
       return None
 
   def get_templates(self, name) :
     text = self.get_text(name)
-    if not text : return []
+    if text == None : return None
     wikicode = mwparserfromhell.parse(text)
     return wikicode.filter_templates()
 
   def get_template(self, templates, template_name) :
+    if templates == None : return None
     for t in templates :
       if t.name == template_name : return t
     return None
@@ -170,6 +182,7 @@ class Downloader :
   def download_snp(self, snp_name, geno_dict = {}) :
     snp = SNP(snp_name)
     templates = self.wiki.get_templates(snp_name)
+    if templates == None : return None
     if self.wiki.get_template(templates, 'Rsnum\n') :
       snp.chromosome = self.wiki.get_val(templates, 'Rsnum\n', 'Chromosome')
       snp.gene = self.wiki.get_val(templates, 'Rsnum\n', 'Gene')
@@ -179,6 +192,17 @@ class Downloader :
       snp.dbSNP_build = self.wiki.get_val(templates, 'Rsnum\n', 'dbSNPBuild')
       snp.orientation = self.wiki.get_val(templates, 'Rsnum\n', 'Orientation')
       snp.stabilized_orientation = self.wiki.get_val(templates, 'Rsnum\n', 'StabilizedOrientation')
+      snp.genotypes = {}
+      for i in range(1,4) :
+        val = self.wiki.get_val(templates, 'Rsnum\n', 'geno%d' % i, False) 
+        if val :
+          genotype_name = snp_name + val
+          if len(geno_dict) and not genotype_name.lower() in geno_dict :
+            print '*** WARNING : genotype %s not in list, adding placeholder instead ' % genotype_name
+            genotype = SNPGenotype(snp, val)
+          else :
+            genotype = self.download_genotype(snp, val)
+          snp.genotypes[genotype.str_alleles] = genotype
     elif self.wiki.get_template(templates, '23andMe SNP\n') :
       snp.chromosome = self.wiki.get_val(templates, '23andMe SNP\n', 'Chromosome')
       snp.gene = self.wiki.get_val(templates, '23andMe SNP\n', 'Gene')
@@ -188,21 +212,14 @@ class Downloader :
       snp.dbSNP_build = None
       snp.orientation = None
       snp.stabilized_orientation = None
-    snp.genotypes = {}
-    for i in range(1,4) :
-      val = self.wiki.get_val(templates, 'Rsnum\n', 'geno%d' % i, False) 
-      if val :
-        genotype_name = snp_name + val
-        if len(geno_dict) and not genotype_name.lower() in geno_dict :
-          print '*** WARNING : genotype %s not in list, adding placeholder instead ' % genotype_name
-          genotype = SNPGenotype(snp, val)
-        else :
-          genotype = self.download_genotype(snp, val)
-        snp.genotypes[val] = genotype
+      snp.genotypes = {}
     popd = self.get_populations(templates)
     for geno in popd :
-      if geno in snp.genotypes :
-        snp.genotypes[geno].frequency = popd[geno]
+      pgeno = SNPGenotype(snp, geno)
+      if pgeno.str_alleles in snp.genotypes :
+        snp.genotypes[pgeno.str_alleles].frequency = popd[geno]
+      else :
+        print 'WARNING: could not match population freqs of %s' % geno
     if snp.genotypes == {} and self.wiki.get_template(templates, 'hgsnp\n') :
       anc_all = self.wiki.get_val(templates, 'hgsnp\n', 'ancestral_allele')
       der_all = self.wiki.get_val(templates, 'hgsnp\n', 'derived_allele')
@@ -211,13 +228,27 @@ class Downloader :
       except:
         summary = ''
       if anc_all : 
-        anc_geno = SNPGenotype(snp, anc_all)
-        anc_geno.summary = summary
-        snp.genotypes[anc_all] = anc_geno
+        if snp.chromosome == 'Y' :          
+          anc_geno = SNPGenotype(snp, (anc_all,) )
+          anc_geno.summary = summary
+          snp.genotypes[(anc_all,)] = anc_geno
+        else :
+          anc_geno = SNPGenotype(snp, (anc_all, anc_all) )
+          anc_geno.summary = summary
+          snp.genotypes[(anc_all,anc_all)] = anc_geno
       if der_all : 
-        der_geno = SNPGenotype(snp, der_all)
-        der_geno.summary = summary
-        snp.genotypes[der_all] = der_geno
+        if snp.chromosome == 'Y' :          
+          der_geno = SNPGenotype(snp, (der_all,) )
+          der_geno.summary = summary
+          snp.genotypes[(der_all,)] = der_geno
+        else :
+          der_geno = SNPGenotype(snp, (der_all, der_all) )
+          der_geno.summary = summary
+          snp.genotypes[(der_all,der_all)] = der_geno          
+      if der_all and anc_all and not snp.chromosome == 'Y' :          
+          mix_geno = SNPGenotype(snp, (der_all, anc_all) )
+          mix_geno.summary = summary
+          snp.genotypes[(der_all, anc_all)] = mix_geno
     return snp
 
   def download_genotype(self, snp, genotype_name) :
@@ -227,52 +258,60 @@ class Downloader :
     try :
       genotype.magnitude = float(genotype.magnitude)
     except :
+      print 'WARNING: magnitude %s cannot be converted to float' % genotype.magnitude
       genotype.magnitude = None
     genotype.summary   = self.wiki.get_val(templates, 'Genotype\n', 'summary')
-    genotype.repute = self.wiki.get_val(templates, 'Genotype\n', 'repute').lower()
-    if genotype.magnitude != 'good' and genotype.magnitude != 'bad' : genotype.magnitude = None
+    genotype.repute = self.wiki.get_val(templates, 'Genotype\n', 'repute')
+    if type(genotype.repute) == str : genotype.repute = genotype.repute.lower()
+    if genotype.repute != 'good' and genotype.repute != 'bad' : 
+      print 'WARNING: setting repute', genotype.repute, 'to None' 
+      genotype.repute = None
     return genotype
 
   def download_genoset(self, genoset_name) :
     genoset = SNPGenoset(genoset_name)
     templates = self.wiki.get_templates(genoset_name)
-    genoset.repute = self.wikiget_val(templates, 'Genoset', 'Repute').lower()
+    genoset.repute = self.wiki.get_val(templates, 'Genoset\n', 'repute')
+    if type(genoset.repute) == str : genoset.repute = genoset.repute.lower()
     if genoset.repute != 'good' and genoset.repute != 'bad' : genoset.repute = None
-    genoset.magnitude = get_val(templates, 'Genoset', 'Magnitude')
+    genoset.magnitude = self.wiki.get_val(templates, 'Genoset\n', 'Magnitude')
     try : 
-      genoset.magnitude = int(genoset.magnitude) 
+      genoset.magnitude = float(genoset.magnitude) 
     except : 
       genoset.magnitude = None
-    genoset.summary   = get_val(templates, 'Genoset', 'Summary')
+    genoset.summary   = self.wiki.get_val(templates, 'Genoset\n', 'Summary')
+    genoset.criteria = ''
     criteria_page = self.wiki.get_text(genoset_name + '/criteria')
     # remove # comments
-    criteria_text = ''
-    for l in criteria_page.split('\n') : 
-      toks = l.split()
-      if len(toks) == 0 : continue
-      if toks[0] == '#' : continue
-      criteria_text = criteria_text + l + '\n'
-    # remove HTML comments
-    import lxml.html as LH
-    doc = LH.fromstring(criteria_text)
-    criteria = doc.text_content()
-    criteria = criteria.replace(' ', '').replace('\n', '').replace('\t', '')
-    genoset.criteria = append(criteria)
+    if criteria_page :
+      criteria_text = ''
+      for l in criteria_page.split('\n') : 
+        toks = l.split()
+        if len(toks) == 0 : continue
+        if toks[0] == '#' : continue
+        criteria_text = criteria_text + l + '\n'
+      # remove HTML comments
+      import lxml.html as LH
+      doc = LH.fromstring(criteria_text)
+      genoset.criteria = doc.text_content()
+      genoset.criteria = genoset.criteria.replace(' ', '').replace('\n', '').replace('\t', '')
     return genoset
 
   def get_populations(self, templates) :
     pops = []
+    t0 = None
     for t in templates :
       if t.name != ' population diversity\n' : continue
       for line in t.split('\n') :
         tokens = [ s.strip(' ') for s in line.split('|') ]
-        if tokens[1] != 'CEU' : continue
+        if len(tokens) < 2 or tokens[1] != 'CEU' : continue
         pops = tokens[2:]
+        t0 = t
         break
     popd = {}
     try :
       for i, pop in enumerate(pops) :
-        popd[t.get('geno%d' % (i+1)).value.rstrip('\n')] = float(p)
+        popd[t0.get('geno%d' % (i+1)).value.rstrip('\n')] = float(pop)
     except:
       print 'ERROR : could not retrieve population diversity values'
     return popd
@@ -298,6 +337,7 @@ class Downloader :
         print 'INFO : writing SNP %s, index %d of %d' % (name, num, len(snps))
         shelf[name] = snp.serialize()
         processed = processed + 1
+        if processed % 10 == 0 : shelf.sync()
     except KeyboardInterrupt :
       print 'INFO: SNP download was interrupted cleanly'
       interrupt = True
@@ -325,6 +365,7 @@ class Downloader :
         print 'INFO : writing genoset %s, index %d of %d' % (name, num, len(genosets))
         shelf[name] = genoset.serialize()
         processed = processed + 1
+        if processed % 10 == 0 : shelf.sync()
     except KeyboardInterrupt :
       print 'INFO: genoset download was interrupted cleanly'
       interrupt = True
@@ -333,13 +374,13 @@ class Downloader :
     shelf.close()
     return not interrupt
 
-  def download(self) :
+  def download(self, do_snps = True, do_genosets = True) :
     try :
       if self.download_category('Is_a_snp',      self.config.snp_list_file) and \
          self.download_category('Is_a_genotype', self.config.genotype_list_file) and \
          self.download_category('Is_a_genoset',  self.config.genoset_list_file) and \
-         self.download_snps() and \
-         self.download_genosets() : return True
+         (not do_snps or self.download_snps()) and \
+         (not do_genosets or self.download_genosets()) : return True
     except KeyboardInterrupt :
       pass
     print 'INFO : download process was interrupted cleanly, leaving now'
@@ -357,18 +398,23 @@ class Allele :
       print 'ERROR : invalid allele %s in genotype' % allele
       self.allele = None
   
-  def plus_allele(self) :
-    if self.orientation == None : return None
-    if self.orientation == 'plus' : return self.allele
+  def flipped_allele(self) :
     if self.allele == '.' : return '.'
     if self.allele == '-' : return '-'
     flipmap = { 'A' : 'T', 'T' : 'A', 'C' : 'G', 'G' : 'C' }
     return ''.join(flipmap[c] for c in self.allele)
+
+  def plus_allele(self) :
+    if self.orientation == None : 
+      print 'WARNING: returning allele %s with no orientation information' % self.allele
+      return self.allele
+    if self.orientation == 'plus' : return self.allele
+    return self.flipped_allele()
   
   def match(self, other) :
     u1 = self.plus_allele()
     u2 = other.plus_allele()
-    print 'yyy comparing', u1, u2
+    print 'yyy comparing plus alleles', u1, u2
     if u1 == u2 : return True
     if u1 == '.' and u2 != '-' : return True
     if u2 == '.' and u1 != '-' : return True
@@ -397,11 +443,11 @@ class SNP :
     self.genotypes = {}
     
   def match(self, genotype) :
-    print 'xxx comparing', genotype.genotype, 'to snp', self.name
+    print 'xxx comparing genotype pair ', genotype.genotype, 'to snp', self.name
     if genotype.chromosome != None and self.chromosome != None and genotype.chromosome != self.chromosome : return []
     if genotype.position != None and self.position != None and genotype.position != self.position : return []
     matches = [ self.genotypes[g] for g in self.genotypes if self.genotypes[g].match(genotype) ]
-    print 'xxx matches:', ','.join(g.genotype for g in matches)
+    print 'xxx matches:', ','.join(g.genotype() for g in matches)
     return matches
 
   def serialize(self) :
@@ -418,20 +464,6 @@ class SNP :
     return record
   
   def deserialize(self, record) :
-    # HACK for now
-    self.chromosome = record[0]
-    self.gene = record[2]
-    self.position = int(record[3]) if record[3].isdigit() else None
-    self.genome_build = record[4]
-    self.dbSNP_build = record[5]
-    ori = record[1][0] if len(record[1]) > 0 else None
-    if ori == 'p' : self.orientation = 'plus'
-    elif ori == 'm' : self.orientation = 'minus'
-    self.stabilized_orientation = self.orientation
-    for geno in record[6] :
-      self.genotypes[geno[0]] = SNPGenotype(self, geno[0]).deserialize(geno[1])
-    return self
-    #end HACK
     try :
       self.chromosome = record[0]
       self.gene = record[1]
@@ -445,83 +477,95 @@ class SNP :
       sor = record[5][1]
       if sor == 'p' : self.stabilized_orientation = 'plus'
       elif sor == 'm' : self.stabilized_orientation = 'minus'
-      else : self.stabilized_orientation = None
+      else : 
+        self.stabilized_orientation = self.orientation # if no stabilized_orientation info, default to orientation. Safe ?
       for geno in record[6] :
         self.genotypes[geno] = SNPGenotype(self, geno).deserialize(record[6][geno])
     except KeyError as error :
       error.message = error.message + '\nERROR : could not deserialize snp record %s' % record
       raise
     return self
-      
-class SNPGenotype() :
+
+
+class SNPGenotype :
   def __init__(self, snp, genotype) :
-    if type(genotype) == list :
-      self.alleles = genotype
+    if type(genotype) == tuple :
+      self.str_alleles = genotype
     else :
-      self.alleles = self.parse_alleles(genotype)
+      self.str_alleles = self.parse_alleles(genotype)
+      print genotype, '->', self.str_alleles
     self.snp = snp
     self.magnitude = None
     self.summary = None
     self.repute = None
+    self.frequency = None
         
-  def parse_alleles(self, raw_genotype) :
-    match = re.match('\((([A-Z]|-)*)(;(([A-Z]|-)*))?\)', raw_genotype)
-    if match : return [ match.group(1) ].append(match.group(6) if match.group(6) else [])
+  def parse_alleles(self, raw_genotype) : # for first parse from DB
+    raw_genotype = raw_genotype.strip(' ')
+    tokens = raw_genotype.split('(')
+    if len(tokens) > 1 : raw_genotype = '(' + tokens[1]
+    match = re.match('\((([A-Z]|-)*);(([A-Z]|-)*)\)', raw_genotype)
+    if match : return ( match.group(1), match.group(3) )
+    match = re.match('\((([A-Z]|-)*)\)', raw_genotype)
+    if match : return ( match.group(1), )
     match = re.match('^([A-Z]|-)([A-Z]|-)$', raw_genotype)
-    if match : return [ match.group(0), match.group(1) ]
+    if match : return ( match.group(1), match.group(1) )
     match = re.match('^([A-Z]|-)$', raw_genotype)
-    if match : return [ match.group(0) ]
+    if match : return ( match.group(1), )
+    print 'ERROR : cannot parse genotype "%s"' % raw_genotype
     return None
 
+  def genotype(self) :
+    return '(' + ';'.join(self.str_alleles) + ')'
+  
   def full_name(self) : 
-    return self.snp.name + self.genotype
-
+    return self.snp.name + self.genotype()
+  
   def alleles(self) :
-    return [ Allele(a, snp.orientation) for a in self.alleles ]
+    return [ Allele(a, self.snp.stabilized_orientation) for a in self.str_alleles ] ### Use self.snp.stabilized_orientation for the dbSNP version 
 
   def match(self, genotype) :
     ref_alleles = self.alleles()
     gen_alleles = genotype.alleles()
     if len(ref_alleles) == 1 : # snp_genotypes specifies 1 allele : can match either of ours
-      for a in gen_alleles : 
+      for a in gen_alleles :
+        print 'xxx 1-allele test', a.plus_allele(), ref_alleles[0].plus_allele()
         if a.match(ref_alleles[0]) : return True
+      print 'xxx 1-fail'
       return False
+    #if len(gen_alleles) == 1 : # genotype specifies 1 allele : unexpected, but allow it to match one of ours
+      #for a in ref_alleles :
+        #print 'zzz 1-allele test', a.plus_allele(), gen_alleles[0].plus_allele()
+        #if a.match(gen_alleles[0]) : return True
+      #print 'zzz 1-fail'
+      #return False
     if len(ref_alleles) == 2 : # snp_genotypes specifies 2 allele : must match both of ours
       if len(gen_alleles) != 2 : return False
-      print 'xxx compare genotype gen', ','.join(al.allele for al in gen_alleles)
-      print 'xxx compare genotype snp', ','.join(al.allele for al in ref_alleles)
+      print 'xxx compare genotype gen', ','.join(al.allele for al in gen_alleles), 'and genotype snp', ','.join(al.allele for al in ref_alleles)
+      print 'xxx combination 1 :', gen_alleles[0].allele, '=', ref_alleles[0].allele, ', and ', gen_alleles[1].allele, '=', ref_alleles[1].allele, '?'
       if gen_alleles[0].match(ref_alleles[0]) and gen_alleles[1].match(ref_alleles[1]) : return True
+      print 'xxx combination 2 :', gen_alleles[0].allele, '=', ref_alleles[1].allele, ', and ', gen_alleles[1].allele, '=', ref_alleles[0].allele, '?'
       if gen_alleles[0].match(ref_alleles[1]) and gen_alleles[1].match(ref_alleles[0]) : return True
+      print 'xxx combinations all fail!'
       return False
     return False
 
   def match_genome(self, genome) :
     genotype = genome.genotype(self.snp.name)
+    if genotype :
+      print 'mgg', ','.join(al.plus_allele() for al in genotype.alleles())
     return self.match(genotype) if genotype else False
 
   def serialize(self) :
     if self.repute == 'good' : rep = True 
     elif self.repute == 'bad' : rep = False
     else : rep = None
-    return [ self.magnitude, rep, self.summary ]
+    return [ self.magnitude, rep, self.summary, self.frequency ]
   
   def deserialize(self, record) :
-    # HACK for now
-    try:
-      self.magnitude = float(record[0])
-    except:
-      self.magnitude = None
-    self.summary = record[1]
-    rep = record[2]
-    if rep == 'g' :  self.repute = 'good'
-    elif rep == 'b' : self.repute = 'bad'
-    else : self.repute = None
-    return self
-    #end HACK
     try :
-      try:
-        self.magnitude = float(record[0])
-      except : self.magnitude = None
+      self.magnitude = record[0]
+      self.frequency = record[3]
       if record[1] == True : self.repute = 'good'
       elif record[1] == False : self.repute = 'bad'
       else : self.repute = None
@@ -532,7 +576,7 @@ class SNPGenotype() :
     return self
 
 
-class SNPGenoset() :
+class SNPGenoset :
   def __init__(self, name = None, criteria = None, parsed = None, data = None) :
     self.name = name
     self.magnitude = None
@@ -575,8 +619,35 @@ class SNPGenoset() :
     if snp == None : 
       print 'WARNING : while evaluating criteria %s, encountered unknown SNP %s' % (self.parsed_criteria(), match.group(1) + match.group(2))
       return False
-    print 'ggg', snp.name, match.groups()
-    return SNPGenotype(snp, match.group(3) + (match.group(6) if match.group(6) else ''))
+    print 'ggg', snp.name, snp.stabilized_orientation, match.groups()
+    genotype = SNPGenotype(snp, ( match.group(3), ) + (( match.group(6), ) if match.group(6) else ()))
+    # HACK1: some genosets test SNPs that have no genotypes defined. We assume this is a temporary situation and skip the test in this case:
+    if len(snp.genotypes) == 0 : 
+      print 'ggg HACK1 for %s in genoset %s' % (snp.name, self.name)
+      return genotype
+    # end HACK1
+    ## HACK2: some genosets built from hgsnp had only 1 allele reported (ancestral/derived). This should now be fixed in the download phase
+    ## but in the meantime we need this hack here.
+    #if len(snp.genotypes) > 0 and len(snp.genotypes.iterkeys().next()) == 1 :
+      #genotype1 = SNPGenotype(snp, ( match.group(3), ))
+      #print 'ggg HACK2 for %s in genoset %s' % (snp.name, self.name)
+    ## end HACK2
+    for g in snp.genotypes :
+      snpg = snp.genotypes[g]
+      if genotype.match(snpg) : return genotype
+    # HACK3: some genosets have their criteria backwards (wrong orientation). So try to flip them first
+    flipped_genotype = SNPGenotype(snp, tuple(al.flipped_allele() for al in genotype.alleles()))
+    for g in snp.genotypes :
+      snpg = snp.genotypes[g]
+      if flipped_genotype.match(snpg) : 
+        print 'ggg HACK3 for %s in genoset %s' % (snp.name, self.name)
+        return flipped_genotype
+    # end HACK3
+    print 'WARNING : while evaluating criteria %s, encountered unknown genotype %s for SNP %s' % (self.parsed_criteria(), str(genotype.str_alleles), snp.name)
+    print 'known genotypes (orientation = %s):' % snp.serialize()[5],
+    for g in snp.genotypes : print g, 
+    print('\n')
+    return False
 
   def parse_genoset(self) :
     gs  = re.match('gs([0-9]*)', self.parsed_criteria())
@@ -587,6 +658,7 @@ class SNPGenoset() :
     if type(self.parsed_criteria()) == str : # simple case : a single expression
       snp_genotype = self.parse_snp_genotype()
       if snp_genotype == False : return False # SNP not present, skip
+      print 'm_g', snp_genotype.snp.name if snp_genotype else '???'
       if snp_genotype != None : return snp_genotype.match_genome(genome)
       # it is None => could not parse
       genoset = self.parse_genoset()
@@ -627,24 +699,11 @@ class SNPGenoset() :
 
   def serialize(self) :
     if self.repute == 'good' : rep = True 
-    elif repute == 'bad' : rep = False
+    elif self.repute == 'bad' : rep = False
     else : rep = None
     return [ self.magnitude, rep, self.criteria, self.summary ]
   
   def deserialize(self, record) :
-    # HACK for now
-    print 'rrr', self.name, record
-    try:
-      self.magnitude = float(record[0])
-    except:
-      self.magnitude = None
-    if record[2] == 'g' : self.repute = 'good'
-    elif record[2] == 'b' : self.repute = 'bad'
-    else : self.repute = None
-    self.criteria = record[3]
-    self.summary = record[1]    
-    return self
-    #end HACK
     try :
       self.magnitude = record[0]
       if record[1] == True : self.repute = 'good'
@@ -690,11 +749,11 @@ class Genome :
       if not snp_name in self.genotypes : continue
       genotype = self.genotypes[snp_name]
       snp = self.data.snp(snp_name)
-      matches = snp.match(genotype)
-      print 'xxx Test Results', ','.join(m.genotype for m in matches)
+      matches = snp.match(genotype) # a list of SNPGenotypes at this point
+      print 'xxx Test Results', ','.join(m.genotype() for m in matches)
       if len(matches) == 0 : continue
       if len(matches) > 1 : 
-        print 'WARNING : genotype %s of snp %s has multiple matches:' % (genotype.genotype, snp.name), ', '.join(g.genotype for g in matches)
+        print 'WARNING : genotype %s of snp %s has multiple matches:' % (genotype.genotype, snp.name), ', '.join(g.genotype() for g in matches)
         continue
       results.append(Match(genotype, snp, matches[0]))
     return results
@@ -733,21 +792,29 @@ class HtmlOutput :
   def __init__(self, config = None) :
     self.config = config if config != None else Config()
     
-  def snp_page(self, snp_results, output, mag_cutoff = 2, mode = 'w') :
+  def snp_page(self, snp_results, output, mag_cutoff = 2, mode = 'w', freq_threshold = 25) :
     print snp_results
     sorted_results = sorted(snp_results, key=lambda result: result.snp_geno_match.magnitude, reverse=True)
     outfile = open(output, mode)
     outfile.write(self.config.css_style)
     outfile.write('<h1> SNP Results </h1> <table>\n')
-    outfile.write('<tr><td> SNP ID </td><td> Chr. </td><td> Gene </td><td> Individual Genotype </td><td> Matched Genotype </td><td> Significance </td><td> Description </td>\n')
+    outfile.write('<tr><td> SNP ID </td><td> Chr. </td><td> Gene </td><td> Individual Genotype </td><td> Matched Genotype </td><td> Significance </td><td> Frequency </td><td> Description </td>\n')
     for result in sorted_results :
       if result.snp_geno_match.magnitude < mag_cutoff : break # list is sorted
       outfile.write('  <tr><td> %s </td><td> %s </td><td> %s </td> <td> %s </td>  <td> %s </td> ' 
-                    % (result.snp.name, result.snp.chromosome, result.snp.gene, result.genotype.genotype, result.snp_geno_match.genotype))
+                    % (result.snp.name, result.snp.chromosome, result.snp.gene, result.genotype.genotype, result.snp_geno_match.genotype()))
       mag_style = ''
-      if result.snp_geno_match.repute == 'good' : mag_style = '  bgcolor="#00FF00"'
-      elif result.snp_geno_match.repute == 'bad' : mag_style = '  bgcolor="#FF0000"'
-      outfile.write('<td%s> %s </td> <td> %s </td>' % (mag_style, result.snp_geno_match.magnitude, result.snp_geno_match.summary))
+      if result.snp_geno_match.repute == 'good' : 
+        if result.snp_geno_match.frequency != None and result.snp_geno_match.frequency < freq_threshold : 
+          mag_style = '  bgcolor="#00FF00"'
+        else :
+          mag_style = '  bgcolor="#9999FF"'
+      elif result.snp_geno_match.repute == 'bad' : 
+        if result.snp_geno_match.frequency != None and result.snp_geno_match.frequency < freq_threshold : 
+          mag_style = '  bgcolor="#FF0000"'
+        else :
+          mag_style = '  bgcolor="#FF9900"'
+      outfile.write('<td%s> %s </td> <td%s> %s </td><td> %s </td>' % (mag_style, result.snp_geno_match.magnitude, mag_style, result.snp_geno_match.frequency, result.snp_geno_match.summary))
       outfile.write('<tr>\n')
     outfile.write('</table>\n')
 
